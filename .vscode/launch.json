@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "vira debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/vira/core.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--annotation", "${workspaceFolder}/data/reference.gtf",
+                "--genome", "${workspaceFolder}/data/reference.fasta",
+                "--target", "${workspaceFolder}/data/target.fasta",
+                "--output", "${workspaceFolder}/data/output.gtf",
+                "--sam2gtf", "${workspaceFolder}/soft/sam2gtf",
+            ],
+        }
+    ]
+}
+  
