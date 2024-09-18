@@ -16,6 +16,8 @@ class Object:
 
         self.attrs = dict()
         self.expression = list()
+        
+        self.data = None # whatever data user wants to store in the object
 
     def clear(self):
         """
@@ -29,6 +31,7 @@ class Object:
         self.end = 0
         self.attrs.clear()
         self.expression = list()
+        self.data = None
 
     def to_transcript(self) -> 'Transcript':
         """
@@ -48,6 +51,7 @@ class Object:
         tx.set_tid(self.attrs["transcript_id"])
         tx.set_gid(self.attrs.get("gene_id", None))
         tx.set_expression(self.expression)
+        tx.set_data(self.data)
         return tx
     
     def to_exon(self) -> 'Exon':
@@ -68,6 +72,7 @@ class Object:
         exon.set_tid(self.attrs["transcript_id"])
         exon.set_gid(self.attrs.get("gene_id", None))
         exon.set_expression(self.expression)
+        exon.set_data(self.data)
         return exon
 
     def is_empty(self) -> bool:
@@ -221,6 +226,18 @@ class Object:
             None
         """
         self.expression = exps
+        
+    def set_data(self, data):
+        """
+        Set the data of the object.
+
+        Args:
+            data: The data.
+
+        Returns:
+            None
+        """
+        self.data = data
 
     def get_source(self) -> str:
         """

@@ -118,18 +118,23 @@ class Vira:
         # iterate over target transcripts
         for target_tx in target_tome:
             target_read_tid = target_tx.get_attr("read_name")
+            target_tx.data = {"seq":"", "cds":""}
             print(f"Target transcript {target_read_tid}")
 
             # pull the corresponding transcript from reference
             ref_tx = ref_tome.get_by_tid(target_read_tid)
+            ref_tx.data = {"seq":"", "cds":""}
             
             # pull the corresponding transcript from guide
             guide_tx = None
             if self.guide:
                 guide_tx = guide_tome.get_by_tid(target_read_tid)
+                guide_tx.data = {"seq":"", "cds":""}
 
-            target_tx_seq = target_tx.get_sequence(target_tome.genome)
-            ref_tx_seq = ref_tx.get_sequence(ref_tome.genome)
+            target_tx.data["seq"] = target_tx.get_sequence(target_tome.genome)
+            ref_tx.data["seq"] = ref_tx.get_sequence(ref_tome.genome)
+            
+            # check all donor and acceptor sites noting whether they are conserved or not
             
             continue
             
