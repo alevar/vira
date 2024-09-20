@@ -1,6 +1,11 @@
+import os
+import re
 import argparse
 import subprocess
-import os
+
+from Bio import pairwise2
+from Bio.pairwise2 import format_alignment
+# from Bio import substitution_matrices
 
 from utils.common import *
 
@@ -100,60 +105,97 @@ class Vira:
         # combine annotated transcripts, CDSs and guide annotation together
         # for each transcript/cds annotate any differences
         self.build()
+        
+    def compare_intron_chains(self, ref_tome, target_tome):
+        donor_map = {} # holds the mapping between reference and target donor sites
+        acceptor_map = {} # holds the mapping between reference and target acceptor sites
+        for ref_tx in ref_tome.transcript_it():
+            for ref_i,ref_intron in enumerate(ref_tx.introns_intron()):
+                # find position of the intron in the target genome
+                
+                read_tid = ref_tx.get_attr("read_name")
+                target_tx = target_tome.get_by_tid(read_tid)
+                
+                
+        
+        return
 
-    def extract_junction_seq(self, tx, genome):
-        # for each transcript extract donor and acceptor sites for each intron
-        sjs = []
-        if len(tx.exons) == 1:
-            return sjs
-        for i,e in enumerate(tx.get_exons()):
-            if i != 0:
-                # skip acceptor extraction for the first exon
-                acceptor_seq = genome[e[2].seqid][e[2].start-1-2:e[2].start-1].seq
-                sjs[-1][1] = acceptor_seq
-                e[2].set_attributes({"acceptor_seq":acceptor_seq})
-            if i != len(tx.exons)-1:
-                # skip donor extraction for the last exon
-                donor_seq = genome[e[2].seqid][e[2].end-1:e[2].end-1+2].seq
-                sjs.append([donor_seq,None])
-                e[2].set_attributes({"donor_seq":donor_seq})
+    def process_cigar(self, cigar_string, ref_start, tx_start):
+        """
+        Process CIGAR string to create a mapping from reference genome positions
+        to target (transcript) positions.
 
-        return sjs
+        :param cigar_string: CIGAR string from alignment
+        :param ref_start: Start position on the reference genome (1-based)
+        :param tx_start: Start position on the transcript (1-based)
+        :return: A dictionary mapping reference positions to transcript positions
+        """
+        # CIGAR operation regex
+        cigar_operations = re.findall(r'(\d+)([MIDNSHP=X])', cigar_string)
+        
+        # Initialize positions
+        ref_pos = ref_start
+        tx_pos = tx_start
 
-    def compare_sj_seq(self, ref_sj_seq, target_sj_seq):
-        # compare donor and acceptor sites
-        sj_comp = []
-        for i in range(len(ref_sj_seq)):
-            ref_donor, ref_acceptor = ref_sj_seq[i]
-            target_donor, target_acceptor = target_sj_seq[i]
-            if ref_donor == target_donor:
-                sj_comp.append("D")
-            else:
-                sj_comp.append("d")
-            if ref_acceptor == target_acceptor:
-                sj_comp.append("A")
-            else:
-                sj_comp.append("a")
-        return sj_comp
+        # Maps to track reference to query and query to reference
+        ref_to_tx_map = {}
+        tx_to_ref_map = {}
+
+        # Process each CIGAR operation
+        for length, op in cigar_operations:
+            length = int(length)
+
+            if op == 'M' or op == '=' or op == 'X':  # Match/Mismatch
+                for _ in range(length):
+                    # Map reference to transcript and transcript to reference
+                    ref_to_tx_map[ref_pos] = tx_pos
+                    tx_to_ref_map[tx_pos] = ref_pos
+                    ref_pos += 1
+                    tx_pos += 1
+            elif op == 'I':  # Insertion in query (relative to the reference)
+                # Insertions affect only the transcript position
+                for _ in range(length):
+                    tx_to_ref_map[tx_pos] = None  # No reference mapping for inserted bases
+                    tx_pos += 1
+            elif op == 'D' or op == 'N':  # Deletion or skipped region in the reference
+                # Deletions affect only the reference position
+                for _ in range(length):
+                    ref_to_tx_map[ref_pos] = None  # No transcript mapping for deleted bases
+                    ref_pos += 1
+            elif op == 'S':  # Soft clipping (not aligned, still present in the transcript)
+                # Soft clipping affects only the transcript position
+                tx_pos += length
+            elif op == 'H':  # Hard clipping (not aligned and not present in the transcript)
+                # Hard clipping affects neither reference nor transcript positions
+                continue
+
+        return ref_to_tx_map, tx_to_ref_map
 
     def build(self):
         # start by building transcriptomes for reference and target
         ref_tome = Transcriptome()
         ref_tome.load_genome(self.genome)
         ref_tome.build_from_file(self.annotation)
+        ref_tome.extract_introns()
 
         target_tome = Transcriptome()
         target_tome.load_genome(self.target)
         target_tome.build_from_file(self.exon_sam2gtf_fname)
+        target_tome.extract_introns()
+        
+        # extract ref and target donor/acceptor pairs into dictionaries.
+        # Validate that all are conserved between the two genomes
 
         guide_tome = Transcriptome()
         if self.guide:
             guide_tome.build_from_file(self.guide)
             
+            # verify compatibility of guide transcripts and CDSs with the target annotation
+            
         # iterate over target transcripts
         for target_tx in target_tome:
             target_read_tid = target_tx.get_attr("read_name")
-            target_tx.data = {"seq":"", "cds":""}
+            target_tx.data = {"seq":"", "cds":"", "ref2tx_map":None, "tx2ref_map":None}
             print(f"Target transcript {target_read_tid}")
 
             # pull the corresponding transcript from reference
@@ -169,13 +211,10 @@ class Vira:
             target_tx.data["seq"] = target_tx.get_sequence(target_tome.genome)
             ref_tx.data["seq"] = ref_tx.get_sequence(ref_tome.genome)
             
+            target_tx.data["ref2tx_map"], target_tx.data["tx2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx.start, target_tx.start)
+            
             # check all donor and acceptor sites noting whether they are conserved or not
-            ref_sj_seq = self.extract_junction_seq(ref_tx, ref_tome.genome)
-            target_sj_seq = self.extract_junction_seq(target_tx, target_tome.genome)
-
-            # compare donor acceptor pairs
-            sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
-
+            
             continue
             
         # iterate over reference transcripts and check if any were not annotated in the target

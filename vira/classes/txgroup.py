@@ -367,6 +367,9 @@ class Transcriptome (TXGroup):
         super().__init__()
 
         self.genome = None
+        
+        self.donors = {}
+        self.acceptors = {}
 
     def build_from_file(self,fname: str) -> None:
         """
@@ -489,3 +492,14 @@ class Transcriptome (TXGroup):
 
     def load_genome(self, fasta_fname):
         self.genome = Fasta(fasta_fname)
+        
+    def extract_introns(self):
+        for tx in self.transcript_it():
+            for it in tx.introns_it():
+                self.donors.setdefault(it[0],{"count":0,"seq":None})
+                self.donors[it[0]]["count"]+=1
+                
+                self.acceptors.setdefault(it[0],{"count":0,"seq":None})
+                self.acceptors[it[0]]["count"]+=1
+                
+        
