@@ -101,6 +101,41 @@ class Vira:
         # for each transcript/cds annotate any differences
         self.build()
 
+    def extract_junction_seq(self, tx, genome):
+        # for each transcript extract donor and acceptor sites for each intron
+        sjs = []
+        if len(tx.exons) == 1:
+            return sjs
+        for i,e in enumerate(tx.get_exons()):
+            if i != 0:
+                # skip acceptor extraction for the first exon
+                acceptor_seq = genome[e[2].seqid][e[2].start-1-2:e[2].start-1].seq
+                sjs[-1][1] = acceptor_seq
+                e[2].set_attributes({"acceptor_seq":acceptor_seq})
+            if i != len(tx.exons)-1:
+                # skip donor extraction for the last exon
+                donor_seq = genome[e[2].seqid][e[2].end-1:e[2].end-1+2].seq
+                sjs.append([donor_seq,None])
+                e[2].set_attributes({"donor_seq":donor_seq})
+
+        return sjs
+
+    def compare_sj_seq(self, ref_sj_seq, target_sj_seq):
+        # compare donor and acceptor sites
+        sj_comp = []
+        for i in range(len(ref_sj_seq)):
+            ref_donor, ref_acceptor = ref_sj_seq[i]
+            target_donor, target_acceptor = target_sj_seq[i]
+            if ref_donor == target_donor:
+                sj_comp.append("D")
+            else:
+                sj_comp.append("d")
+            if ref_acceptor == target_acceptor:
+                sj_comp.append("A")
+            else:
+                sj_comp.append("a")
+        return sj_comp
+
     def build(self):
         # start by building transcriptomes for reference and target
         ref_tome = Transcriptome()
@@ -135,7 +170,12 @@ class Vira:
             ref_tx.data["seq"] = ref_tx.get_sequence(ref_tome.genome)
             
             # check all donor and acceptor sites noting whether they are conserved or not
-            
+            ref_sj_seq = self.extract_junction_seq(ref_tx, ref_tome.genome)
+            target_sj_seq = self.extract_junction_seq(target_tx, target_tome.genome)
+
+            # compare donor acceptor pairs
+            sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
+
             continue
             
         # iterate over reference transcripts and check if any were not annotated in the target

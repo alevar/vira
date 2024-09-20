@@ -395,7 +395,6 @@ class Object:
         obj.set_seqid(self.seqid)
         obj.set_source(self.source)
         obj.set_strand(self.strand)
-        obj.set_attributes(self.attrs)
         obj.set_type(self.obj_type)
         obj.set_attributes(self.attrs)
         obj.set_start(self.start)
