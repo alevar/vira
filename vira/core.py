@@ -47,6 +47,7 @@ class Vira:
         self.miniprot = args.miniprot
         
         # TMP FILES
+        self.dedup_reference_gtf_fname = self.tmp_dir+"dedup_reference.gtf"
         self.cds_nt_fasta_fname = self.tmp_dir+"cds_nt.fasta"
         self.cds_aa_fasta_fname = self.tmp_dir+"cds_aa.fasta"
         self.exon_nt_fasta_fname = self.tmp_dir+"exon_nt.fasta"
@@ -74,15 +75,39 @@ class Vira:
     def write_output(self):
         print("Writing output file...")
 
+    def extract_gene_protein_gtf(self, in_fname, genome, out_fname):
+        # takes a gtf file, and extract one transcript per gene_id with its protein annotated
+        # asserts there is only one unique protein per gene_id
+        
+        tome = Transcriptome()
+        tome.load_genome(genome)
+        tome.build_from_file(in_fname)
+        
+        gene_map = {}
+        
+        for tx in tome:
+            tx.data = {"cds": ""}
+            nt = tx.get_sequence(tome.genome,use_cds=True)
+            tx.data["cds"] = translate(nt)
+            
+            gene_id = tx.get_attr("gene_id")
+            if gene_id not in gene_map:
+                gene_map[gene_id] = tx
+            else:
+                assert gene_map[gene_id].data["cds"] == tx.data["cds"], f"Multiple proteins found for gene_id {gene_id}"
+                
+        # write out the output
+        with open(out_fname,"w+") as outFP:
+            for gene_id, tx in gene_map.items():
+                outFP.write(tx.to_gtf()+"\n")
+
     def run(self):
-        # extract the reference transcript and protein sequences
+        # extract the reference transcript
         cmd = [self.gffread,
                 "-g",self.genome,
-                "-y",self.cds_aa_fasta_fname,
-                "-x",self.cds_nt_fasta_fname,
                 "-w",self.exon_nt_fasta_fname,
                 self.annotation]
-        print(f"Extracting reference transcript and protein sequences: {' '.join(cmd)}")
+        print(f"Extracting reference transcript sequences: {' '.join(cmd)}")
         subprocess.call(cmd)
 
         # run minimap of transcript sequences to the target genome
@@ -102,6 +127,14 @@ class Vira:
         # begin by extracting deduplicated CDSs from the target genome
         # and building a map of the cds duplicate tids to the gene id
         # make sure there is a single CDS per gene_id
+        self.extract_gene_protein_gtf(self.annotation, self.genome, self.dedup_reference_gtf_fname)
+        cmd = [self.gffread,
+                "-g",self.genome,
+                "-y",self.cds_aa_fasta_fname,
+                "-x",self.cds_nt_fasta_fname,
+                self.dedup_reference_gtf_fname]
+        print(f"Extracting reference protein sequences: {' '.join(cmd)}")
+        subprocess.call(cmd)
         
         if self.miniprot is None:
             cmd = [self.minimap2,"--for-only","-ax","splice",self.target,self.cds_nt_fasta_fname]

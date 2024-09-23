@@ -15,6 +15,7 @@ import csv
 import subprocess
 import numpy as np
 from enum import Enum
+from Bio.Seq import Seq
 
 from typing import Tuple,List
 
@@ -766,3 +767,8 @@ def standard_path(dir_path: str) -> str:
 def reverse_complement(seq: str) -> str:
     complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
     return seq.translate(complement)[::-1]
+
+def translate(seq: str) -> str:
+    nt = Seq(seq)
+    aa = nt.translate()
+    return str(aa)

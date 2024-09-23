@@ -926,12 +926,12 @@ class Transcript (Object):
         """
         return sum([c[2].len() for c in self.cds])
     
-    def get_sequence(self, genome):
+    def get_sequence(self, genome, use_cds: bool=False) -> str:
         sequence = ""
         # Check if the strand is minus
-        exons = sorted(self.exons, reverse=self.strand == '-')
-        for e in exons:
-            sequence += e[2].get_sequence(genome)
+        objects = sorted(self.cds if use_cds else self.exons, reverse=self.strand == '-')
+        for o in objects:
+            sequence += o[2].get_sequence(genome)
         return sequence
 
     def genome_coordinate(self, pos: int) -> int:
