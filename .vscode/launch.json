@@ -13,6 +13,7 @@
                 "--target", "${workspaceFolder}/data/target.fasta",
                 "--output", "${workspaceFolder}/data/output.gtf",
                 "--sam2gtf", "${workspaceFolder}/soft/sam2gtf",
+                "--miniprot", "${workspaceFolder}/soft/miniprot",
             ],
         }
     ]

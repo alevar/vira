@@ -417,6 +417,18 @@ class Object:
             sequence = reverse_complement(sequence)
         return sequence
 
+    def genome_coordinate(self, pos: int) -> int:
+        """
+        Convert a relative position to a genomic coordinate.
+
+        Args:
+            pos (int): The relative position.
+
+        Returns:
+            int: The genomic coordinate.
+        """
+        return self.start+pos
+
 class Transcript (Object):
     """
     A class representing a transcript.
@@ -717,6 +729,7 @@ class Transcript (Object):
 
         """
         self.tid = tid
+        self.add_attribute("transcript_id",tid,replace=True)
 
     def set_gid(self, gid: str) -> None:
         """
@@ -730,6 +743,7 @@ class Transcript (Object):
 
         """
         self.gid = gid
+        self.add_attribute("gene_id",gid,replace=True)
 
     def nume(self):
         """
@@ -919,6 +933,23 @@ class Transcript (Object):
         for e in exons:
             sequence += e[2].get_sequence(genome)
         return sequence
+
+    def genome_coordinate(self, pos: int) -> int:
+        """Convert a relative position to a genomic coordinate.
+
+        Args:
+            pos (int): The relative position.
+
+        Returns:
+            int: The genomic coordinate.
+
+        """
+        cur_len = 0
+        for e in sorted(self.exons):
+            if cur_len + e[2].len() > pos:
+                return e[2].genome_coordinate(pos-cur_len)
+            cur_len += e[2].len()
+        return None
     
 class Exon(Object):
     """
@@ -957,6 +988,7 @@ class Exon(Object):
 
         """
         self.tid = tid
+        self.add_attribute("transcript_id",tid,replace=True)
 
     def set_gid(self, gid: str) -> None:
         """Set the gene ID.
@@ -966,6 +998,7 @@ class Exon(Object):
 
         """
         self.gid = gid
+        self.add_attribute("gene_id",gid,replace=True)
 
     def get_tid(self) -> str:
         """Get the transcript ID.

@@ -574,6 +574,8 @@ def to_attribute_string(attrs: dict, gff=False,
 
     for k in order:
         if k in attrs:
+            if attrs[k] is None or attrs[k] == "":
+                continue
             if gff:
                 assert ";" not in attrs[k], "invalid character in attribute: " + attrs[k]
 

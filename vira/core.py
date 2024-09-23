@@ -5,7 +5,7 @@ import subprocess
 
 from Bio import pairwise2
 from Bio.pairwise2 import format_alignment
-# from Bio import substitution_matrices
+from Bio.Align import substitution_matrices
 
 from utils.common import *
 
@@ -48,11 +48,12 @@ class Vira:
         
         # TMP FILES
         self.cds_nt_fasta_fname = self.tmp_dir+"cds_nt.fasta"
+        self.cds_aa_fasta_fname = self.tmp_dir+"cds_aa.fasta"
         self.exon_nt_fasta_fname = self.tmp_dir+"exon_nt.fasta"
         self.cds_sam_fname = self.tmp_dir+"cds_nt.sam"
         self.exon_sam_fname = self.tmp_dir+"exon_nt.sam"
         self.exon_sam2gtf_fname = self.tmp_dir+"exon_nt.sam2gtf.gtf"
-        self.cds_sam2gtf_fname = self.tmp_dir+"cds_nt.sam2gtf.gtf"
+        self.cds_gtf_fname = self.tmp_dir+"cds_nt.sam2gtf.gtf"
 
         self.check_tools()
 
@@ -66,24 +67,25 @@ class Vira:
         if subprocess.call(f"command -v {self.sam2gtf}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
             raise EnvironmentError(f"sam2gtf is not installed or not available in PATH. Please install sam2gtf before running vira. Installation instructions can be found at: https://github.com/alevar/sam2gtf")
         
-        # if subprocess.call(f"command -v {self.miniprot}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
-        #     raise EnvironmentError(f"miniprot is not installed or not available in PATH. Please install miniprot before running vira. Installation instructions can be found at: https://github.com/lh3/miniprot")
+        if self.miniprot is not None:
+            if subprocess.call(f"command -v {self.miniprot}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+                raise EnvironmentError(f"miniprot is not installed or not available in PATH. Please install miniprot before running vira. Installation instructions can be found at: https://github.com/lh3/miniprot")
 
     def write_output(self):
         print("Writing output file...")
 
     def run(self):
         # extract the reference transcript and protein sequences
-        cmd = [self.gffread,"-g",self.genome,"-x",self.cds_nt_fasta_fname,"-w",self.exon_nt_fasta_fname,self.annotation]
+        cmd = [self.gffread,
+                "-g",self.genome,
+                "-y",self.cds_aa_fasta_fname,
+                "-x",self.cds_nt_fasta_fname,
+                "-w",self.exon_nt_fasta_fname,
+                self.annotation]
         print(f"Extracting reference transcript and protein sequences: {' '.join(cmd)}")
         subprocess.call(cmd)
 
-        # run minimap of transcripts and proteins to the CRF genome
-        cmd = [self.minimap2,"--for-only","-ax","splice",self.target,self.cds_nt_fasta_fname]
-        print(" ".join(cmd)+" > "+self.cds_sam_fname)
-        with open(self.cds_sam_fname,"w+") as outFP:
-            subprocess.call(cmd,stdout=outFP)
-
+        # run minimap of transcript sequences to the target genome
         cmd = [self.minimap2,"--for-only","-ax","splice",self.target,self.exon_nt_fasta_fname]
         print(" ".join(cmd)+" > "+self.exon_sam_fname)
         with open(self.exon_sam_fname,"w+") as outFP:
@@ -96,50 +98,114 @@ class Vira:
         print(" ".join(cmd))
         subprocess.call(cmd)
 
-        cmd = [self.sam2gtf,
-            "-i",self.cds_sam_fname,
-            "-o",self.cds_sam2gtf_fname]
-        print(" ".join(cmd))
-        subprocess.call(cmd)
+        # do the proteins
+        # begin by extracting deduplicated CDSs from the target genome
+        # and building a map of the cds duplicate tids to the gene id
+        # make sure there is a single CDS per gene_id
+        
+        if self.miniprot is None:
+            cmd = [self.minimap2,"--for-only","-ax","splice",self.target,self.cds_nt_fasta_fname]
+            print(" ".join(cmd)+" > "+self.cds_sam_fname)
+            with open(self.cds_sam_fname,"w+") as outFP:
+                subprocess.call(cmd,stdout=outFP)
 
+            cmd = [self.sam2gtf,
+                "-i",self.cds_sam_fname,
+                "-o",self.cds_gtf_fname]
+            print(" ".join(cmd))
+            subprocess.call(cmd)
+        else:
+            miniprot_gff_fname = self.tmp_dir+"miniprot.gff"
+            cmd = [self.miniprot,"--gff", self.target, self.cds_aa_fasta_fname]
+            print(" ".join(cmd)+" > "+miniprot_gff_fname)
+            with open(miniprot_gff_fname,"w+") as outFP:
+                subprocess.call(cmd,stdout=outFP)
+
+            # need to standardize the miniprot output
+            tome = Transcriptome()
+            tome.build_from_file(miniprot_gff_fname)
+            # use comments to extract the PAF alignment notes and append to the records
+            with open(miniprot_gff_fname,"r") as inFP:
+                cur_cigar = None
+                cur_tid = None
+                for line in inFP:
+                    if line.startswith("##PAF"):
+                        cur_tid = line.split("\t")[1]
+                        cur_cigar = line.split("cg:Z:",1)[1].split("\t",1)[0]
+                    else:
+                        if cur_cigar is not None:
+                            new_tid = line.split("\t")[8].split("ID=",1)[1].split(";",1)[0]
+                            tx = tome.get_by_tid(new_tid)
+                            tx.set_tid(cur_tid)
+                            tx.add_attribute("cigar",cur_cigar)
+
+                            for e in tx.exons:
+                                e[2].set_tid(cur_tid)
+                            for c in tx.cds:
+                                c[2].set_tid(cur_tid)
+                            cur_cigar = None
+                            cur_tid = None
+
+            # write out the standardized file
+            with open(self.cds_gtf_fname,"w+") as outFP:
+                outFP.write(tome.to_gtf())
         # combine annotated transcripts, CDSs and guide annotation together
         # for each transcript/cds annotate any differences
         self.build()
         
-    def compare_intron_chains(self, ref_tome, target_tome):
+    def compare_intron_sets(self, ref_tome, target_tome):
+        # verifies consistency of intron mapping between reference and target genomes
+        # for every reference donor/acceptor - make sure there is only one corresponding target donor/acceptor
+        # raise issues otherwise
+
         donor_map = {} # holds the mapping between reference and target donor sites
         acceptor_map = {} # holds the mapping between reference and target acceptor sites
         for ref_tx in ref_tome.transcript_it():
-            for ref_i,ref_intron in enumerate(ref_tx.introns_intron()):
+            for ref_i,ref_intron in enumerate(ref_tx.introns_it()):
                 # find position of the intron in the target genome
+                target_tx = target_tome.get_by_tid(ref_tx.get_tid())
                 
-                read_tid = ref_tx.get_attr("read_name")
-                target_tx = target_tome.get_by_tid(read_tid)
-                
-                
-        
-        return
+                trg_donor_pos = target_tx.data["ref2trg_map"][ref_intron[0]-1]
+                trg_acceptor_pos = target_tx.data["ref2trg_map"][ref_intron[1]]
 
-    def process_cigar(self, cigar_string, ref_start, tx_start):
+                assert trg_donor_pos is not None and trg_donor_pos[1]=="M", f"Target donor site not found for reference donor site {ref_intron[0]}"
+                assert trg_acceptor_pos is not None and trg_acceptor_pos[1]=="M", f"Target acceptor site not found for reference acceptor site {ref_intron[1]}"
+
+                donor_map.setdefault(ref_intron[0],[]).append(trg_donor_pos)
+                acceptor_map.setdefault(ref_intron[1],[]).append(trg_acceptor_pos)
+
+        # verify consistency
+        for donor_pos in donor_map:
+            assert len(set(donor_map[donor_pos])) == 1, f"Multiple target donor sites found for reference donor site {donor_pos}: {donor_map[donor_pos]}"
+            # set the target donor site to the first element in the list
+            donor_map[donor_pos] = donor_map[donor_pos][0][0]
+        for acceptor_pos in acceptor_map:
+            assert len(set(acceptor_map[acceptor_pos])) == 1, f"Multiple target acceptor sites found for reference acceptor site {acceptor_pos}: {acceptor_map[acceptor_pos]}"
+            # set the target acceptor site to the first element in the list
+            acceptor_map[acceptor_pos] = acceptor_map[acceptor_pos][0][0]
+
+        return donor_map, acceptor_map
+
+    def process_cigar(self, cigar_string, qry_tx, trg_tx):
         """
-        Process CIGAR string to create a mapping from reference genome positions
-        to target (transcript) positions.
+        Process CIGAR string to create a mapping from query genome positions
+        to target positions.
 
         :param cigar_string: CIGAR string from alignment
-        :param ref_start: Start position on the reference genome (1-based)
-        :param tx_start: Start position on the transcript (1-based)
-        :return: A dictionary mapping reference positions to transcript positions
+        :param qry_tx: query transcript
+        :param trg_tx: target transcript
+        :return: A dictionary mapping qry positions to target positions
         """
         # CIGAR operation regex
         cigar_operations = re.findall(r'(\d+)([MIDNSHP=X])', cigar_string)
         
         # Initialize positions
-        ref_pos = ref_start
-        tx_pos = tx_start
+        qry_pos = 0
+        trg_pos = trg_tx.start
 
         # Maps to track reference to query and query to reference
-        ref_to_tx_map = {}
-        tx_to_ref_map = {}
+        qry_to_trg_map = {}
+        trg_to_qry_map = {}
 
         # Process each CIGAR operation
         for length, op in cigar_operations:
@@ -147,29 +213,85 @@ class Vira:
 
             if op == 'M' or op == '=' or op == 'X':  # Match/Mismatch
                 for _ in range(length):
-                    # Map reference to transcript and transcript to reference
-                    ref_to_tx_map[ref_pos] = tx_pos
-                    tx_to_ref_map[tx_pos] = ref_pos
-                    ref_pos += 1
-                    tx_pos += 1
-            elif op == 'I':  # Insertion in query (relative to the reference)
-                # Insertions affect only the transcript position
+                    qry_genome_pos = qry_tx.genome_coordinate(qry_pos)
+                    # Map query to target and target to query
+                    qry_to_trg_map[qry_genome_pos] = (trg_pos,op)
+                    trg_to_qry_map[trg_pos] = (qry_genome_pos,op)
+                    qry_pos += 1
+                    trg_pos += 1
+            elif op == 'I':  # Insertion in query (relative to the target)
+                # Insertions affect only the query position
                 for _ in range(length):
-                    tx_to_ref_map[tx_pos] = None  # No reference mapping for inserted bases
-                    tx_pos += 1
-            elif op == 'D' or op == 'N':  # Deletion or skipped region in the reference
-                # Deletions affect only the reference position
+                    qry_genome_pos = qry_tx.genome_coordinate(qry_pos)
+                    qry_to_trg_map[qry_genome_pos] = (None,op)  # No target mapping for inserted bases
+                    qry_pos += 1
+            elif op == 'D' or op == 'N':  # Deletion or skipped region in the query
+                # Deletions affect only the target position
                 for _ in range(length):
-                    ref_to_tx_map[ref_pos] = None  # No transcript mapping for deleted bases
-                    ref_pos += 1
-            elif op == 'S':  # Soft clipping (not aligned, still present in the transcript)
-                # Soft clipping affects only the transcript position
-                tx_pos += length
-            elif op == 'H':  # Hard clipping (not aligned and not present in the transcript)
-                # Hard clipping affects neither reference nor transcript positions
+                    trg_to_qry_map[trg_pos] = (None,op)  # No query mapping for deleted bases
+                    trg_pos += 1
+            elif op == 'S':  # Soft clipping (not aligned, still present in the query)
+                # Soft clipping affects only the query position
+                for _ in range(length):
+                    qry_genome_pos = qry_tx.genome_coordinate(qry_pos)
+                    qry_to_trg_map[qry_genome_pos] = (trg_pos,op)
+                    qry_pos += length
+            elif op == 'H':  # Hard clipping (not aligned and not present in the target)
+                # Hard clipping affects neither query nor target positions
                 continue
 
-        return ref_to_tx_map, tx_to_ref_map
+        return qry_to_trg_map, trg_to_qry_map
+
+    def reassign_tids(self, tome, attr="read_name"):
+        # assigns the specified attribute as the transcript id
+        # checks there are no duplicates
+        assigned = set()
+        for tx in tome:
+            cur_tid = tx.get_tid()
+            tid = tx.get_attr(attr)
+            assert tid not in assigned, f"Duplicate transcript id {tid} found in the annotation"
+            tx.set_tid(tid)
+            for e in tx.get_exons():
+                e[2].set_tid(tid)
+            for c in tx.get_cds():
+                c[2].set_tid(tid)
+
+            # change mapping in tome
+            tome.tid_map[tid] = tome.tid_map.pop(cur_tid)
+
+    def extract_junction_seq(self, tx, genome):
+        # for each transcript extract donor and acceptor sites for each intron
+        sjs = []
+        if len(tx.exons) == 1:
+            return sjs
+        for i,e in enumerate(tx.get_exons()):
+            if i != 0:
+                # skip acceptor extraction for the first exon
+                acceptor_seq = genome[e[2].seqid][e[2].start-1-2:e[2].start-1].seq
+                sjs[-1][1] = acceptor_seq
+                e[2].add_attribute("acceptor_seq",acceptor_seq,replace=True)
+            if i != len(tx.exons)-1:
+                # skip donor extraction for the last exon
+                donor_seq = genome[e[2].seqid][e[2].end-1:e[2].end-1+2].seq
+                sjs.append([donor_seq,None])
+                e[2].add_attribute("donor_seq",donor_seq,replace=True)
+        return sjs
+
+    def compare_sj_seq(self, ref_sj_seq, target_sj_seq):
+        # compare donor and acceptor sites
+        sj_comp = []
+        for i in range(len(ref_sj_seq)):
+            ref_donor, ref_acceptor = ref_sj_seq[i]
+            target_donor, target_acceptor = target_sj_seq[i]
+            if ref_donor == target_donor:
+                sj_comp.append("D")
+            else:
+                sj_comp.append("d")
+            if ref_acceptor == target_acceptor:
+                sj_comp.append("A")
+            else:
+                sj_comp.append("a")
+        return sj_comp
 
     def build(self):
         # start by building transcriptomes for reference and target
@@ -182,45 +304,55 @@ class Vira:
         target_tome.load_genome(self.target)
         target_tome.build_from_file(self.exon_sam2gtf_fname)
         target_tome.extract_introns()
-        
-        # extract ref and target donor/acceptor pairs into dictionaries.
-        # Validate that all are conserved between the two genomes
+        # deduplicate target transcripts and convert transcript_ids
+        self.reassign_tids(target_tome)
 
-        guide_tome = Transcriptome()
-        if self.guide:
-            guide_tome.build_from_file(self.guide)
-            
-            # verify compatibility of guide transcripts and CDSs with the target annotation
+        # load the cds results
+
+        # iterate over reference transcripts and report any that were not annotated in the target
+        for ref_tx in ref_tome:
+            if ref_tx.tid not in target_tome.tid_map:
+                print(f"Reference transcript {ref_tx.tid} not annotated in the target genome")
             
         # iterate over target transcripts
         for target_tx in target_tome:
-            target_read_tid = target_tx.get_attr("read_name")
-            target_tx.data = {"seq":"", "cds":"", "ref2tx_map":None, "tx2ref_map":None}
-            print(f"Target transcript {target_read_tid}")
+            target_tx.data = {"seq": "", "cds": "", "ref2trg_map": None, "trg2ref_map": None}
 
             # pull the corresponding transcript from reference
-            ref_tx = ref_tome.get_by_tid(target_read_tid)
+            ref_tx = ref_tome.get_by_tid(target_tx.get_tid())
             ref_tx.data = {"seq":"", "cds":""}
-            
-            # pull the corresponding transcript from guide
-            guide_tx = None
-            if self.guide:
-                guide_tx = guide_tome.get_by_tid(target_read_tid)
-                guide_tx.data = {"seq":"", "cds":""}
+
+            # assign gene_id based on the reference along with other attributes
+            target_tx.set_gid(ref_tx.get_attr("gene_id"))
+            for e in target_tx.get_exons():
+                e[2].set_gid(ref_tx.get_attr("gene_id"))
+            for c in target_tx.get_cds():
+                c[2].set_gid(ref_tx.get_attr("gene_id"))
 
             target_tx.data["seq"] = target_tx.get_sequence(target_tome.genome)
             ref_tx.data["seq"] = ref_tx.get_sequence(ref_tome.genome)
             
-            target_tx.data["ref2tx_map"], target_tx.data["tx2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx.start, target_tx.start)
+            target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
             
             # check all donor and acceptor sites noting whether they are conserved or not
+            ref_sj_seq = self.extract_junction_seq(ref_tx, ref_tome.genome)
+            target_sj_seq = self.extract_junction_seq(target_tx, target_tome.genome)
+            # compare donor acceptor pairs
+            sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
             
-            continue
-            
-        # iterate over reference transcripts and check if any were not annotated in the target
-        for ref_tx in ref_tome:
-            if ref_tx.tid not in target_tome.tid_map:
-                print(f"Reference transcript {ref_tx.tid} not annotated in the target genome")
+        # check all donor and acceptor positions noting whether they are conserved or not
+        donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
+
+        # next we need to add the protein annotation to the target genome
+        # load the CDS for each trannscript
+
+        # if guide available - compare to the guide
+
+        # lastly, load the cds sequence and run pairwise alignment internally to annotate any differences
+
+        # write out the final GTF file
+        with open(self.output,"w+") as outFP:
+            outFP.write(target_tome.to_gtf())
         
 def main():
     parser = argparse.ArgumentParser(description="Tool for HIV-1 genome annotation")
@@ -234,7 +366,7 @@ def main():
     parser.add_argument('--gffread', type=str, default='gffread', help='Path to the gffread executable')
     parser.add_argument('--minimap2', type=str, default='minimap2', help='Path to the minimap2 executable')
     parser.add_argument('--sam2gtf', type=str, default='sam2gtf', help='Path to the sam2gtf executable')
-    parser.add_argument('--miniprot', type=str, default='miniprot', help='Path to the miniprot executable')
+    parser.add_argument('--miniprot', type=str, default='miniprot', help='Path to the miniprot executable. If not set - minimap2 will be used to align nucleotide sequence of the CDS instead')
 
     parser.add_argument('--keep-tmp', action='store_true', help='Keep temporary files')
     parser.add_argument('--tmp-dir', type=str, default='./tmp', help='Directory to store temporary files')

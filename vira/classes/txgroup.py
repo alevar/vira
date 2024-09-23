@@ -40,7 +40,7 @@ class TXGroup:
             int: The index of the added object in the objects list.
         """
         idx = None
-        if obj.get_type() in [Types.Transcript, Types.Exon, Types.CDS]:
+        if obj.get_type() in [Types.Transcript, Types.MRNA, Types.Exon, Types.CDS]:
             idx = self.tid_map.setdefault(obj.get_tid(),len(self.objects))
             if len(self.objects) == idx:
                 self.objects.append(Transcript(obj))
@@ -51,6 +51,8 @@ class TXGroup:
                 idx = self.tid_map.setdefault(tx.get_tid(),len(self.objects))
                 assert len(self.objects) == idx,"Transcript ID already exists in the objects list"
                 self.objects.append(tx)
+        elif obj.get_type() in [Types.Other]:
+            pass
         else:
             raise Exception("Wrong object type provided to the add_object methods of TXGroup")
         
