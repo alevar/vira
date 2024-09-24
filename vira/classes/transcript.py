@@ -950,6 +950,22 @@ class Transcript (Object):
                 return e[2].genome_coordinate(pos-cur_len)
             cur_len += e[2].len()
         return None
+
+    def get_chain(self, use_cds: bool=False) -> List[int]:
+        """Get the chain of the transcript.
+
+        Args:
+            use_cds (bool, optional): If True, use the CDS chain. Defaults to False.
+
+        Returns:
+            List[int]: A list of the exon coordinates.
+
+        """
+        chain = []
+        objects = sorted(self.cds if use_cds else self.exons, reverse=self.strand == '-')
+        for o in objects:
+            chain.append([o[2].get_start(), o[2].get_end()])
+        return chain
     
 class Exon(Object):
     """

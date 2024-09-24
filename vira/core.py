@@ -54,7 +54,7 @@ class Vira:
         self.cds_sam_fname = self.tmp_dir+"cds_nt.sam"
         self.exon_sam_fname = self.tmp_dir+"exon_nt.sam"
         self.exon_sam2gtf_fname = self.tmp_dir+"exon_nt.sam2gtf.gtf"
-        self.cds_gtf_fname = self.tmp_dir+"cds_nt.sam2gtf.gtf"
+        self.cds_gtf_fname = self.tmp_dir+"cds.miniprot.gtf"
 
         self.check_tools()
 
@@ -135,53 +135,56 @@ class Vira:
                 self.dedup_reference_gtf_fname]
         print(f"Extracting reference protein sequences: {' '.join(cmd)}")
         subprocess.call(cmd)
+
+        # get transcript_id to gene_id mapping
+        tid2gid = {}
+        with open(self.dedup_reference_gtf_fname,"r") as inFP:
+            for line in inFP:
+                if line.startswith("#"):
+                    continue
+                lcs = line.strip().split("\t")
+                if lcs[2] == "transcript":
+                    attrs = extract_attributes(lcs[8])
+                    tid = attrs["transcript_id"]
+                    gid = attrs["gene_id"]
+                    tid2gid[tid] = gid
         
-        if self.miniprot is None:
-            cmd = [self.minimap2,"--for-only","-ax","splice",self.target,self.cds_nt_fasta_fname]
-            print(" ".join(cmd)+" > "+self.cds_sam_fname)
-            with open(self.cds_sam_fname,"w+") as outFP:
-                subprocess.call(cmd,stdout=outFP)
+        miniprot_gff_fname = self.tmp_dir+"miniprot.gff"
+        cmd = [self.miniprot,"--gff", self.target, self.cds_aa_fasta_fname]
+        print(" ".join(cmd)+" > "+miniprot_gff_fname)
+        with open(miniprot_gff_fname,"w+") as outFP:
+            subprocess.call(cmd,stdout=outFP)
 
-            cmd = [self.sam2gtf,
-                "-i",self.cds_sam_fname,
-                "-o",self.cds_gtf_fname]
-            print(" ".join(cmd))
-            subprocess.call(cmd)
-        else:
-            miniprot_gff_fname = self.tmp_dir+"miniprot.gff"
-            cmd = [self.miniprot,"--gff", self.target, self.cds_aa_fasta_fname]
-            print(" ".join(cmd)+" > "+miniprot_gff_fname)
-            with open(miniprot_gff_fname,"w+") as outFP:
-                subprocess.call(cmd,stdout=outFP)
+        # need to standardize the miniprot output
+        tome = Transcriptome()
+        tome.build_from_file(miniprot_gff_fname)
+        # use comments to extract the PAF alignment notes and append to the records
+        with open(miniprot_gff_fname,"r") as inFP:
+            cur_cigar = None
+            cur_tid = None
+            for line in inFP:
+                if line.startswith("##PAF"):
+                    cur_tid = line.split("\t")[1]
+                    cur_cigar = line.split("cg:Z:",1)[1].split("\t",1)[0]
+                else:
+                    if cur_cigar is not None:
+                        new_tid = line.split("\t")[8].split("ID=",1)[1].split(";",1)[0]
+                        tx = tome.get_by_tid(new_tid)
+                        tx.set_tid(cur_tid)
+                        tx.add_attribute("cigar",cur_cigar)
+                        tx.set_gid(tid2gid[cur_tid])
 
-            # need to standardize the miniprot output
-            tome = Transcriptome()
-            tome.build_from_file(miniprot_gff_fname)
-            # use comments to extract the PAF alignment notes and append to the records
-            with open(miniprot_gff_fname,"r") as inFP:
-                cur_cigar = None
-                cur_tid = None
-                for line in inFP:
-                    if line.startswith("##PAF"):
-                        cur_tid = line.split("\t")[1]
-                        cur_cigar = line.split("cg:Z:",1)[1].split("\t",1)[0]
-                    else:
-                        if cur_cigar is not None:
-                            new_tid = line.split("\t")[8].split("ID=",1)[1].split(";",1)[0]
-                            tx = tome.get_by_tid(new_tid)
-                            tx.set_tid(cur_tid)
-                            tx.add_attribute("cigar",cur_cigar)
+                        for e in tx.exons:
+                            e[2].set_tid(cur_tid)
+                        for c in tx.cds:
+                            c[2].set_tid(cur_tid)
+                        cur_cigar = None
+                        cur_tid = None
 
-                            for e in tx.exons:
-                                e[2].set_tid(cur_tid)
-                            for c in tx.cds:
-                                c[2].set_tid(cur_tid)
-                            cur_cigar = None
-                            cur_tid = None
+        # write out the standardized file
+        with open(self.cds_gtf_fname,"w+") as outFP:
+            outFP.write(tome.to_gtf())
 
-            # write out the standardized file
-            with open(self.cds_gtf_fname,"w+") as outFP:
-                outFP.write(tome.to_gtf())
         # combine annotated transcripts, CDSs and guide annotation together
         # for each transcript/cds annotate any differences
         self.build()
@@ -341,6 +344,22 @@ class Vira:
         self.reassign_tids(target_tome)
 
         # load the cds results
+        target_cds_tome = Transcriptome()
+        target_cds_tome.load_genome(self.target)
+        target_cds_tome.build_from_file(self.cds_gtf_fname)
+        target_cds_tome.extract_introns()
+        # get mapping of gene_ids to transcript_ids
+        gene_map = {}
+        for tx in target_cds_tome:
+            gid = tx.get_gid()
+            assert gid not in gene_map, f"Duplicate gene_id {gid} found in the annotation"
+            gene_map[gid] = tx.get_tid()
+
+        guide_tome = Transcriptome()
+        if self.guide is not None:
+            guide_tome.load_genome(self.target)
+            guide_tome.build_from_file(self.guide)
+            guide_tome.extract_introns()
 
         # iterate over reference transcripts and report any that were not annotated in the target
         for ref_tx in ref_tome:
@@ -377,11 +396,33 @@ class Vira:
         donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
 
         # next we need to add the protein annotation to the target genome
-        # load the CDS for each trannscript
+        # load the CDS for each transcript
+        for target_tx in target_tome:
+            tid = target_tx.get_tid()
+            gid = target_tx.get_gid()
+            if gid not in gene_map:
+                continue
+            cds_tid = gene_map[gid]
+            target_cds_tx = target_cds_tome.get_by_tid(cds_tid)
 
-        # if guide available - compare to the guide
+            # check compatibility of the CDS with the transcript
+            target_chain = target_tx.get_chain()
+            target_cds_chain = target_cds_tx.get_chain(use_cds=True)
+            assert target_cds_chain == cut_chain(target_chain, target_cds_chain[0][0], target_cds_chain[-1][1]), f"Transcript and CDS chains do not match for transcript {tid}"
+            # add the CDS to the transcript
+            for c in target_cds_tx.get_cds():
+                tmp = c[2].copy()
+                tmp.add_attribute("transcript_id",tid,replace=True)
+                target_tx.add_cds(tmp)
 
-        # lastly, load the cds sequence and run pairwise alignment internally to annotate any differences
+            # if guide available - compare to the guide
+            if self.guide is not None:
+                guide_tx = guide_tome.get_by_tid(tid)
+                if guide_tx is not None:
+                    guide_chain = guide_tx.get_chain(use_cds=True)
+                    assert target_cds_chain == guide_chain, f"Transcript and guide CDS chains do not match for transcript {tid}"
+
+            # lastly, load the cds sequence and run pairwise alignment internally to annotate any differences
 
         # write out the final GTF file
         with open(self.output,"w+") as outFP:
