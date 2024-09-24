@@ -1,5 +1,6 @@
 import os
 import re
+import copy
 import argparse
 import subprocess
 
@@ -411,7 +412,7 @@ class Vira:
             assert target_cds_chain == cut_chain(target_chain, target_cds_chain[0][0], target_cds_chain[-1][1]), f"Transcript and CDS chains do not match for transcript {tid}"
             # add the CDS to the transcript
             for c in target_cds_tx.get_cds():
-                tmp = c[2].copy()
+                tmp = copy.deepcopy(c[2])
                 tmp.add_attribute("transcript_id",tid,replace=True)
                 target_tx.add_cds(tmp)
 
