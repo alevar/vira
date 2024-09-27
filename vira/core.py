@@ -410,10 +410,9 @@ class Vira:
 
             target_tx.data["seq"] = target_tx.get_sequence(target_tome.genome)
             ref_tx.data["seq"] = ref_tx.get_sequence(ref_tome.genome)
-
-            # get the longest ORF for the transcript
-            print(target_tx.get_tid())
-            self.get_first_cds(target_tx, target_tome)
+            if ref_tx.has_cds():
+                nt = ref_tx.get_sequence(ref_tome.genome,use_cds=True)
+                ref_tx.data["cds"] = translate(nt)
             
             target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
             
@@ -426,7 +425,34 @@ class Vira:
         # check all donor and acceptor positions noting whether they are conserved or not
         donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
 
-        # next we need to add the protein annotation to the target genome
+        # next we need to add the protein annotation to the target genome      
+        cds_choices = {tx.get_tid():{"minimap2":None,
+                                     "first":None,
+                                     "guide":None} for tx in target_tome}
+        
+        blosum62 = substitution_matrices.load("BLOSUM62")
+        
+        # load first ORF for each transcript
+        for tx in target_tome:
+            cds = self.get_first_cds(tx, target_tome)
+            if len(cds) > 0:
+                tmp_tx = copy.deepcopy(tx)
+                for c in cds:
+                    tmp_tx.add_cds(c)
+                # get translated sequence
+                target_cds_nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
+                target_cds_aa = translate(target_cds_nt)
+                tmp_tx.data["cds"] = target_cds_aa
+                cds_choices[tx.get_tid()]["first"] = tmp_tx
+                
+                # get reference tx and cds
+                ref_tx = ref_tome.get_by_tid(tx.get_tid())
+                ref_cds_aa = ref_tx.data["cds"]
+                
+                # align cds to the reference
+                alignments = pairwise2.align.localds(target_cds_aa, ref_cds_aa, blosum62, -10, -0.5)
+                print(format_alignment(*alignments[0]))
+          
         # load the CDS for each transcript
         for target_tx in target_tome:
             tid = target_tx.get_tid()
@@ -441,19 +467,42 @@ class Vira:
             target_cds_chain = target_cds_tx.get_chain(use_cds=True)
             assert target_cds_chain == cut_chain(target_chain, target_cds_chain[0][0], target_cds_chain[-1][1]), f"Transcript and CDS chains do not match for transcript {tid}"
             # add the CDS to the transcript
+            tmp_tx = copy.deepcopy(target_tx)
             for c in target_cds_tx.get_cds():
                 tmp = copy.deepcopy(c[2])
                 tmp.add_attribute("transcript_id",tid,replace=True)
-                target_tx.add_cds(tmp)
+                tmp_tx.add_cds(tmp)
+            # get translated sequence
+            nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
+            tmp_tx.data["cds"] = translate(nt)
+            cds_choices[tid]["minimap2"] = tmp_tx
+            
+        # load the guide annotation where available
+        if self.guide is not None:
+            for guide_tx in guide_tome:
+                gid = guide_tx.get_gid()
+                if gid not in gene_map:
+                    continue
+                cds_tid = gene_map[gid]
 
-            # if guide available - compare to the guide
-            if self.guide is not None:
-                guide_tx = guide_tome.get_by_tid(tid)
-                if guide_tx is not None:
-                    guide_chain = guide_tx.get_chain(use_cds=True)
-                    assert target_cds_chain == guide_chain, f"Transcript and guide CDS chains do not match for transcript {tid}"
-
-            # lastly, load the cds sequence and run pairwise alignment internally to annotate any differences
+                # check compatibility of the CDS with the transcript
+                target_chain = target_tx.get_chain()
+                guide_cds_chain = guide_tx.get_chain(use_cds=True)
+                assert guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]), f"Transcript and guide CDS chains do not match for transcript {tid}"
+                # add the CDS to the transcript
+                tmp_tx = copy.deepcopy(target_tx)
+                for c in guide_tx.get_cds():
+                    tmp = copy.deepcopy(c[2])
+                    tmp.add_attribute("transcript_id",tid,replace=True)
+                    tmp_tx.add_cds(tmp)
+                # get translated sequence
+                nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
+                tmp_tx.data["cds"] = translate(nt)
+                cds_choices[tid]["guide"] = tmp_tx
+                
+        # compare the CDS choices ensuring consistency
+        # for each transcript compare choices
+        # also ensure all agree between transcripts of the same gene
 
         # write out the final GTF file
         with open(self.output,"w+") as outFP:
