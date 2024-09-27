@@ -772,3 +772,31 @@ def translate(seq: str) -> str:
     nt = Seq(seq)
     aa = nt.translate()
     return str(aa)
+
+def find_longest_orfs(seq:str) -> list:
+    """
+    This function finds all longest ORFs in a given sequence.
+
+    Parameters:
+    seq (str): The sequence to find ORFs in.
+
+    Returns:
+    list: A list of longest ORFs in the sequence.
+    """    
+    longest = []
+    max_len = 0
+
+    matches = re.finditer(r'(?=(ATG(?:(?!TAA|TAG|TGA)...)*(?:TAA|TAG|TGA)))', seq)
+    for match in matches:
+        result = match.group(1)
+        coords = [match.start(),match.start()+len(result)-1]
+
+        if max_len<len(result):
+            longest = [coords]
+            max_len = len(result)
+            continue
+        if max_len==len(result):
+            longest.append(coords)
+            continue
+
+    return longest

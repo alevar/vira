@@ -329,6 +329,18 @@ class Vira:
             else:
                 sj_comp.append("a")
         return sj_comp
+    
+    def get_longest_cds(self, tx, tome):
+        # for a given transcript - identify the longest ORF and produce a list of CDS for that transcript
+        cds = []
+        if tx.data == None or tx.data["seq"] == "":
+            tx.data["seq"] = tx.get_sequence(tome.genome)
+        orfs = find_longest_orfs(tx.data["seq"])
+        if len(orfs) == 0:
+            return cds
+        ostart, oend = orfs[0]
+        
+        
 
     def build(self):
         # start by building transcriptomes for reference and target
@@ -384,6 +396,8 @@ class Vira:
 
             target_tx.data["seq"] = target_tx.get_sequence(target_tome.genome)
             ref_tx.data["seq"] = ref_tx.get_sequence(ref_tome.genome)
+            
+            print(target_tx.get_tid(),find_longest_orfs(target_tx.data["seq"]))
             
             target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
             
