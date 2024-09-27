@@ -11,7 +11,7 @@ from Bio.Align import substitution_matrices
 from utils.common import *
 
 from classes.txgroup import Transcriptome, Gene, Bundle
-from classes.transcript import Transcript
+from classes.transcript import Transcript, Object
 
 class Vira:
     def __init__(self, args):
@@ -190,7 +190,7 @@ class Vira:
         # for each transcript/cds annotate any differences
         self.build()
         
-    def compare_intron_sets(self, ref_tome, target_tome):
+    def compare_intron_sets(self, ref_tome: Transcriptome, target_tome: Transcriptome):
         # verifies consistency of intron mapping between reference and target genomes
         # for every reference donor/acceptor - make sure there is only one corresponding target donor/acceptor
         # raise issues otherwise
@@ -223,7 +223,7 @@ class Vira:
 
         return donor_map, acceptor_map
 
-    def process_cigar(self, cigar_string, qry_tx, trg_tx):
+    def process_cigar(self, cigar_string: str, qry_tx: Transcript, trg_tx: Transcript):
         """
         Process CIGAR string to create a mapping from query genome positions
         to target positions.
@@ -279,7 +279,7 @@ class Vira:
 
         return qry_to_trg_map, trg_to_qry_map
 
-    def reassign_tids(self, tome, attr="read_name"):
+    def reassign_tids(self, tome: Transcriptome, attr: str = "read_name"):
         # assigns the specified attribute as the transcript id
         # checks there are no duplicates
         assigned = set()
@@ -296,7 +296,7 @@ class Vira:
             # change mapping in tome
             tome.tid_map[tid] = tome.tid_map.pop(cur_tid)
 
-    def extract_junction_seq(self, tx, genome):
+    def extract_junction_seq(self, tx: Transcript, genome):
         # for each transcript extract donor and acceptor sites for each intron
         sjs = []
         if len(tx.exons) == 1:
@@ -314,7 +314,7 @@ class Vira:
                 e[2].add_attribute("donor_seq",donor_seq,replace=True)
         return sjs
 
-    def compare_sj_seq(self, ref_sj_seq, target_sj_seq):
+    def compare_sj_seq(self, ref_sj_seq: str, target_sj_seq: str):
         # compare donor and acceptor sites
         sj_comp = []
         for i in range(len(ref_sj_seq)):
@@ -330,17 +330,31 @@ class Vira:
                 sj_comp.append("a")
         return sj_comp
     
-    def get_longest_cds(self, tx, tome):
-        # for a given transcript - identify the longest ORF and produce a list of CDS for that transcript
+    def get_first_cds(self, tx: Transcript, tome: Transcriptome):
+        # for a given transcript - identify the first available ORF and produce a list of CDS for that transcript
         cds = []
         if tx.data == None or tx.data["seq"] == "":
             tx.data["seq"] = tx.get_sequence(tome.genome)
-        orfs = find_longest_orfs(tx.data["seq"])
-        if len(orfs) == 0:
+        orf = find_first_orf(tx.data["seq"])
+        if len(orf) == 0:
             return cds
-        ostart, oend = orfs[0]
+        ostart, oend = orf
+        # translate to genomic coordinates
+        ostart = tx.genome_coordinate(ostart)
+        oend = tx.genome_coordinate(oend)
+        tx_chain = tx.get_chain()
+        cds_chain = cut_chain(tx_chain, ostart, oend)
+        for c in cds_chain:
+            obj = Object()
+            obj.set_attributes({"transcript_id":tx.get_tid()})
+            obj.set_start(c[0])
+            obj.set_end(c[1])
+            obj.set_seqid(tx.get_seqid())
+            obj.set_strand(tx.get_strand())
+            obj.obj_type = Types.CDS
+            cds.append(obj)
         
-        
+        return cds
 
     def build(self):
         # start by building transcriptomes for reference and target
@@ -396,8 +410,10 @@ class Vira:
 
             target_tx.data["seq"] = target_tx.get_sequence(target_tome.genome)
             ref_tx.data["seq"] = ref_tx.get_sequence(ref_tome.genome)
-            
-            print(target_tx.get_tid(),find_longest_orfs(target_tx.data["seq"]))
+
+            # get the longest ORF for the transcript
+            print(target_tx.get_tid())
+            self.get_first_cds(target_tx, target_tome)
             
             target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
             
@@ -468,3 +484,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# TODO:
+# 1. additional attributes:
+#   - ORF choice:
+#       - minimap2
+#       - guide
+#       - first ORF

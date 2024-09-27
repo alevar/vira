@@ -800,3 +800,19 @@ def find_longest_orfs(seq:str) -> list:
             continue
 
     return longest
+
+def find_first_orf(seq:str) -> str:
+    """
+    This function finds the first ORF in a given sequence.
+
+    Parameters:
+    seq (str): The sequence to find the first ORF in.
+
+    Returns:
+    list[int,int]: start and end coordinate of the first ORF in the sequence.
+    """
+    matches = re.finditer(r'(?=(ATG(?:(?!TAA|TAG|TGA)...)*(?:TAA|TAG|TGA)))', seq)
+    for match in matches:
+        result = match.group(1)
+        coords = [match.start(),match.start()+len(result)-1]
+        return coords
