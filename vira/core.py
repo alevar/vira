@@ -1,20 +1,35 @@
 import os
 import re
 import copy
+import shutil
 import argparse
 import subprocess
 
-from Bio import pairwise2
-from Bio.pairwise2 import format_alignment
+from Bio import SeqIO, Align
 from Bio.Align import substitution_matrices
 
-from utils.common import *
+from .utils.common import *
 
-from classes.txgroup import Transcriptome, Gene, Bundle
-from classes.transcript import Transcript, Object
+from .classes.txgroup import Transcriptome, Gene, Bundle
+from .classes.transcript import Transcript, Object
 
 class Vira:
     def __init__(self, args):
+        
+        # OPTIONS
+        self.keep_tmp = args.keep_tmp
+        self.tmp_dir = standard_path(args.tmp_dir)
+        if not os.path.exists(self.tmp_dir):
+            os.makedirs(self.tmp_dir)
+
+        # TOOLS
+        self.minimap2 = args.minimap2
+        self.sam2gtf = args.sam2gtf
+        self.miniprot = args.miniprot
+        self.gffread = args.gffread
+        self.check_tools()
+        
+        
         if gtf_or_gff(args.annotation) is None:
             raise ValueError(f"{args.annotation} is not a valid GTF/GFF file.")
         
@@ -25,30 +40,27 @@ class Vira:
             raise FileNotFoundError(f"Input file {args.target} not found.")
         
         if args.guide and not os.path.exists(args.guide):
-            raise FileNotFoundError(f"Guide annotation file {args.guide} not found.")
+            raise FileNotFoundError(f"Guide annotation file {args.guide} not found.")           
+        
         
         # INPUT FILES
-        self.annotation = args.annotation # reference annotation
-        self.genome = args.genome # reference genome
-        self.target = args.target # target genome
-        self.guide = args.guide # guide annotation of the target genome - used to verify the inferred target annotation
+        # create cop;ies of files in tmp directory for use in the pipeline
+        self.annotation = self.tmp_dir+"reference.gtf"
+        shutil.copyfile(args.annotation, self.annotation)
+        self.genome = self.tmp_dir+"reference.fasta"
+        shutil.copyfile(args.genome, self.genome)
+        self.target = self.tmp_dir+"target.fasta"
+        shutil.copyfile(args.target, self.target)
         self.output = args.output
         self.gtf = gtf_or_gff(args.annotation)
-
-        # OPTIONS
-        self.keep_tmp = args.keep_tmp
-        self.tmp_dir = standard_path(args.tmp_dir)
-        if not os.path.exists(self.tmp_dir):
-            os.makedirs(self.tmp_dir)
-
-        # TOOLS
-        self.minimap2 = args.minimap2
-        self.gffread = args.gffread
-        self.sam2gtf = args.sam2gtf
-        self.miniprot = args.miniprot
+        self.guide = None # guide annotation of the target genome - used to verify the inferred target annotation
+        if args.guide:
+            self.guide = self.tmp_dir+"target.guide."+args.guide.rsplit(".",1)[-1]
+            shutil.copyfile(args.guide, self.guide)
         
         # TMP FILES
         self.dedup_reference_gtf_fname = self.tmp_dir+"dedup_reference.gtf"
+        self.dedup_reference_cds_id_map = {}
         self.cds_nt_fasta_fname = self.tmp_dir+"cds_nt.fasta"
         self.cds_aa_fasta_fname = self.tmp_dir+"cds_aa.fasta"
         self.exon_nt_fasta_fname = self.tmp_dir+"exon_nt.fasta"
@@ -56,8 +68,13 @@ class Vira:
         self.exon_sam_fname = self.tmp_dir+"exon_nt.sam"
         self.exon_sam2gtf_fname = self.tmp_dir+"exon_nt.sam2gtf.gtf"
         self.cds_gtf_fname = self.tmp_dir+"cds.miniprot.gtf"
-
-        self.check_tools()
+        
+        
+        # Alignment
+        self.aligner = Align.PairwiseAligner()
+        self.aligner.open_gap_score = -10
+        self.aligner.extend_gap_score = -0.5
+        self.aligner.substitution_matrix = substitution_matrices.load("BLOSUM62")
 
     def check_tools(self):
         if subprocess.call(f"command -v {self.minimap2}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
@@ -72,7 +89,7 @@ class Vira:
         if self.miniprot is not None:
             if subprocess.call(f"command -v {self.miniprot}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
                 raise EnvironmentError(f"miniprot is not installed or not available in PATH. Please install miniprot before running vira. Installation instructions can be found at: https://github.com/lh3/miniprot")
-
+            
     def write_output(self):
         print("Writing output file...")
 
@@ -84,23 +101,25 @@ class Vira:
         tome.load_genome(genome)
         tome.build_from_file(in_fname)
         
-        gene_map = {}
+        cds_map = {}
+        cds_id_map = {} # maps each tid to the id of the cds that was chosen
         
         for tx in tome:
             tx.data = {"cds": ""}
             nt = tx.get_sequence(tome.genome,use_cds=True)
             tx.data["cds"] = translate(nt)
             
-            gene_id = tx.get_attr("gene_id")
-            if gene_id not in gene_map:
-                gene_map[gene_id] = tx
-            else:
-                assert gene_map[gene_id].data["cds"] == tx.data["cds"], f"Multiple proteins found for gene_id {gene_id}"
-                
+            tid = tx.attrs["transcript_id"]
+            cds_map.setdefault(tx.data["cds"],tid)
+            cds_id_map[tid] = cds_map[tx.data["cds"]]
+
         # write out the output
         with open(out_fname,"w+") as outFP:
-            for gene_id, tx in gene_map.items():
+            for cds, tid in cds_map.items():
+                tx = tome.get_by_tid(tid)
                 outFP.write(tx.to_gtf()+"\n")
+                
+        return cds_id_map
 
     def run(self):
         # extract the reference transcript
@@ -128,7 +147,7 @@ class Vira:
         # begin by extracting deduplicated CDSs from the target genome
         # and building a map of the cds duplicate tids to the gene id
         # make sure there is a single CDS per gene_id
-        self.extract_gene_protein_gtf(self.annotation, self.genome, self.dedup_reference_gtf_fname)
+        self.dedup_reference_cds_id_map = self.extract_gene_protein_gtf(self.annotation, self.genome, self.dedup_reference_gtf_fname)
         cmd = [self.gffread,
                 "-g",self.genome,
                 "-y",self.cds_aa_fasta_fname,
@@ -272,7 +291,7 @@ class Vira:
                 for _ in range(length):
                     qry_genome_pos = qry_tx.genome_coordinate(qry_pos)
                     qry_to_trg_map[qry_genome_pos] = (trg_pos,op)
-                    qry_pos += length
+                    qry_pos += 1
             elif op == 'H':  # Hard clipping (not aligned and not present in the target)
                 # Hard clipping affects neither query nor target positions
                 continue
@@ -362,6 +381,11 @@ class Vira:
         ref_tome.load_genome(self.genome)
         ref_tome.build_from_file(self.annotation)
         ref_tome.extract_introns()
+        for tx in ref_tome:
+            tx.data = {"seq":"", "cds":""}
+            tx.data["seq"] = tx.get_sequence(ref_tome.genome)
+            nt = tx.get_sequence(ref_tome.genome,use_cds=True)
+            tx.data["cds"] = translate(nt)
 
         target_tome = Transcriptome()
         target_tome.load_genome(self.target)
@@ -369,24 +393,31 @@ class Vira:
         target_tome.extract_introns()
         # deduplicate target transcripts and convert transcript_ids
         self.reassign_tids(target_tome)
+        for tx in target_tome:
+            tx.data = {"seq":"", "cds":""}
+            tx.data["seq"] = tx.get_sequence(target_tome.genome)
 
         # load the cds results
         target_cds_tome = Transcriptome()
         target_cds_tome.load_genome(self.target)
         target_cds_tome.build_from_file(self.cds_gtf_fname)
         target_cds_tome.extract_introns()
-        # get mapping of gene_ids to transcript_ids
-        gene_map = {}
         for tx in target_cds_tome:
-            gid = tx.get_gid()
-            assert gid not in gene_map, f"Duplicate gene_id {gid} found in the annotation"
-            gene_map[gid] = tx.get_tid()
+            tx.data = {"seq":"", "cds":""}
+            tx.data["seq"] = tx.get_sequence(target_cds_tome.genome)
+            nt = tx.get_sequence(target_cds_tome.genome,use_cds=True)
+            tx.data["cds"] = translate(nt)
 
         guide_tome = Transcriptome()
         if self.guide is not None:
             guide_tome.load_genome(self.target)
             guide_tome.build_from_file(self.guide)
             guide_tome.extract_introns()
+            # extract cds sequnces from the guide
+            for tx in guide_tome:
+                tx.data = {"cds": ""}
+                nt = tx.get_sequence(guide_tome.genome,use_cds=True)
+                tx.data["cds"] = translate(nt)
 
         # iterate over reference transcripts and report any that were not annotated in the target
         for ref_tx in ref_tome:
@@ -395,11 +426,11 @@ class Vira:
             
         # iterate over target transcripts
         for target_tx in target_tome:
-            target_tx.data = {"seq": "", "cds": "", "ref2trg_map": None, "trg2ref_map": None}
+            target_tx.data["ref2trg_map"] = None
+            target_tx.data["trg2ref_map"] = None
 
             # pull the corresponding transcript from reference
             ref_tx = ref_tome.get_by_tid(target_tx.get_tid())
-            ref_tx.data = {"seq":"", "cds":""}
 
             # assign gene_id based on the reference along with other attributes
             target_tx.set_gid(ref_tx.get_attr("gene_id"))
@@ -407,12 +438,6 @@ class Vira:
                 e[2].set_gid(ref_tx.get_attr("gene_id"))
             for c in target_tx.get_cds():
                 c[2].set_gid(ref_tx.get_attr("gene_id"))
-
-            target_tx.data["seq"] = target_tx.get_sequence(target_tome.genome)
-            ref_tx.data["seq"] = ref_tx.get_sequence(ref_tome.genome)
-            if ref_tx.has_cds():
-                nt = ref_tx.get_sequence(ref_tome.genome,use_cds=True)
-                ref_tx.data["cds"] = translate(nt)
             
             target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
             
@@ -424,42 +449,17 @@ class Vira:
             
         # check all donor and acceptor positions noting whether they are conserved or not
         donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
-
-        # next we need to add the protein annotation to the target genome      
-        cds_choices = {tx.get_tid():{"minimap2":None,
-                                     "first":None,
-                                     "guide":None} for tx in target_tome}
-        
-        blosum62 = substitution_matrices.load("BLOSUM62")
-        
-        # load first ORF for each transcript
-        for tx in target_tome:
-            cds = self.get_first_cds(tx, target_tome)
-            if len(cds) > 0:
-                tmp_tx = copy.deepcopy(tx)
-                for c in cds:
-                    tmp_tx.add_cds(c)
-                # get translated sequence
-                target_cds_nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
-                target_cds_aa = translate(target_cds_nt)
-                tmp_tx.data["cds"] = target_cds_aa
-                cds_choices[tx.get_tid()]["first"] = tmp_tx
-                
-                # get reference tx and cds
-                ref_tx = ref_tome.get_by_tid(tx.get_tid())
-                ref_cds_aa = ref_tx.data["cds"]
-                
-                # align cds to the reference
-                alignments = pairwise2.align.localds(target_cds_aa, ref_cds_aa, blosum62, -10, -0.5)
-                print(format_alignment(*alignments[0]))
           
+        cds_choices = {"miniprot":{}, "guide":{}}
+        
+        #========================================================================
+        #===========================   MINIPROT   ===============================
+        #========================================================================
         # load the CDS for each transcript
         for target_tx in target_tome:
             tid = target_tx.get_tid()
-            gid = target_tx.get_gid()
-            if gid not in gene_map:
-                continue
-            cds_tid = gene_map[gid]
+            # get the tid of the transcript whose cds was used in the deduplicated reference
+            cds_tid = self.dedup_reference_cds_id_map[tid]
             target_cds_tx = target_cds_tome.get_by_tid(cds_tid)
 
             # check compatibility of the CDS with the transcript
@@ -475,34 +475,67 @@ class Vira:
             # get translated sequence
             nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
             tmp_tx.data["cds"] = translate(nt)
-            cds_choices[tid]["minimap2"] = tmp_tx
+            cds_choices["miniprot"][tid] = tmp_tx
             
+        #========================================================================
+        #============================   GUIDE   =================================
+        #========================================================================
         # load the guide annotation where available
         if self.guide is not None:
-            for guide_tx in guide_tome:
-                gid = guide_tx.get_gid()
-                if gid not in gene_map:
+            # load a map of guide proteins against which we will be searching 
+            guide_cds_map = {}
+            for tx in guide_tome:
+                if tx.has_cds():
+                    aa = tx.data["cds"]
+                    guide_cds_map.setdefault(aa,tx.get_tid())
+            
+            # load a map of all transcripts for each cds chain in the reference
+            ref_cds_map = {}
+            for tx in ref_tome:
+                if not tid in target_tome: # make sure the reference transcripts we are including are only those that were mapped over
                     continue
-                cds_tid = gene_map[gid]
-
-                # check compatibility of the CDS with the transcript
-                target_chain = target_tx.get_chain()
-                guide_cds_chain = guide_tx.get_chain(use_cds=True)
-                assert guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]), f"Transcript and guide CDS chains do not match for transcript {tid}"
-                # add the CDS to the transcript
-                tmp_tx = copy.deepcopy(target_tx)
-                for c in guide_tx.get_cds():
-                    tmp = copy.deepcopy(c[2])
-                    tmp.add_attribute("transcript_id",tid,replace=True)
-                    tmp_tx.add_cds(tmp)
-                # get translated sequence
-                nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
-                tmp_tx.data["cds"] = translate(nt)
-                cds_choices[tid]["guide"] = tmp_tx
+                if tx.has_cds():
+                    aa = tx.data["cds"]
+                    ref_cds_map.setdefault(aa,[]).append(tx.get_tid())
+                    
+            # for each reference protein - find the corresponding guide protein
+            for aa, tids in ref_cds_map.items():
+                # find matching guide protein by aligning against all guide proteins
+                alignment, identity, guide_tid = find_best_alignment(self.aligner, aa, guide_cds_map)
+                if guide_tid is None:
+                    continue
+                # assign the guide protein to the reference proteins
+                for tid in tids:
+                    target_tx = target_tome.get_by_tid(tid)
+                    guide_tx = guide_tome.get_by_tid(guide_tid)
+                    
+                    # check compatibility of the CDS with the transcript
+                    target_chain = target_tx.get_chain()
+                    guide_cds_chain = guide_tx.get_chain(use_cds=True)
+                    assert guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]), f"Transcript and guide CDS chains do not match for transcript {tid}"
+                    # add the CDS to the transcript
+                    tmp_tx = copy.deepcopy(target_tx)
+                    for c in guide_tx.get_cds():
+                        tmp = copy.deepcopy(c[2])
+                        tmp.add_attribute("transcript_id",tid,replace=True)
+                        tmp_tx.add_cds(tmp)
+                    # get translated sequence
+                    nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
+                    tmp_tx.data["cds"] = translate(nt)
+                    cds_choices["guide"][tid] = tmp_tx
                 
         # compare the CDS choices ensuring consistency
         # for each transcript compare choices
         # also ensure all agree between transcripts of the same gene
+        for tx in target_tome:
+            if not tx.get_tid() in cds_choices["guide"]:
+                tx.cds = cds_choices["miniprot"][tx.get_tid()].cds
+            elif not tx.get_tid() in cds_choices["miniprot"]:
+                tx.cds = cds_choices["guide"][tx.get_tid()].cds
+            elif tx.get_tid() in cds_choices["guide"] and tx.get_tid() in cds_choices["miniprot"]:
+                tx.cds = cds_choices["guide"][tx.get_tid()].cds
+            else:
+                pass
 
         # write out the final GTF file
         with open(self.output,"w+") as outFP:
@@ -533,11 +566,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# TODO:
-# 1. additional attributes:
-#   - ORF choice:
-#       - minimap2
-#       - guide
-#       - first ORF

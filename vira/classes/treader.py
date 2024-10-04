@@ -1,7 +1,7 @@
 from typing import Iterator
 
-from classes.transcript import GTFObjectFactory, Object
-from utils.common import *
+from ..classes.transcript import GTFObjectFactory, Object
+from ..utils.common import *
 
 class TReader:
     """

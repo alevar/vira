@@ -1,5 +1,5 @@
 from intervaltree import Interval, IntervalTree
-from utils.common import *
+from ..utils.common import *
 from typing import Tuple,List, Callable
 import copy
 

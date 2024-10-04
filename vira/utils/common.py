@@ -816,3 +816,52 @@ def find_first_orf(seq:str) -> str:
         result = match.group(1)
         coords = [match.start(),match.start()+len(result)-1]
         return coords
+    
+def calculate_identity(alignment):
+    aligned_seq1, aligned_seq2 = alignment
+    matches = sum(res1 == res2 for res1, res2 in zip(aligned_seq1, aligned_seq2) if res1 != '-' and res2 != '-')
+    length = min(len(aligned_seq1.replace('-', '')), len(aligned_seq2.replace('-', '')))
+    return matches / length if length > 0 else 0
+    
+def find_best_alignment(aligner, qry_seq, refs):
+    """
+    This function searches for the best alignment between a sequence and a dictionary of sequences mapping to transcript IDs.
+
+    Parameters:
+    aligner (Aligner): The aligner to use for the alignment.
+    qry (str): query sequence to align.
+    refs (dict): reference dictionary where sequences are keys and transcript IDs are values.
+
+    Returns:
+    alignment and the transcript ID of the best alignment.
+    """
+    best_identity = 0
+    best_ref_id = None
+    best_alignment = None
+
+    for ref_seq, ref_tid in refs.items():
+        # Perform global alignment using PairwiseAligner
+        score = aligner.score(qry_seq, ref_seq)
+        if score < 0:
+            continue
+        alignments = aligner.align(qry_seq, ref_seq)
+
+        al_score = 0
+        best_i = 0
+        for i, alignment in enumerate(alignments):
+            if alignment.score <= al_score:
+                continue
+            else:
+                best_i = i
+                al_score = alignment.score
+
+        if al_score == 0:
+            continue
+        identity = calculate_identity(alignments[best_i])
+        
+        if identity > best_identity:
+            best_identity = identity
+            best_ref_id = ref_tid
+            best_alignment = alignments[best_i]
+            
+    return best_alignment, best_identity, best_ref_id

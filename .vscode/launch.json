@@ -17,19 +17,19 @@
             ],
         },
         {
-            "name": "vira debug self-to-self",
+            "name": "vira debug atlas",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/vira/core.py",
+            "module": "vira",
             "console": "integratedTerminal",
             "args": [
-                "--annotation", "${workspaceFolder}/data/reference.gtf",
-                "--genome", "${workspaceFolder}/data/reference.fasta",
-                "--target", "${workspaceFolder}/data/reference.fasta",
-                "--output", "${workspaceFolder}/data/output.s2s.gtf",
-                "--sam2gtf", "${workspaceFolder}/soft/sam2gtf",
-                "--miniprot", "${workspaceFolder}/soft/miniprot",
-                "--tmp-dir","${workspaceFolder}/tmp.s2s",
+                "--annotation", "${workspaceFolder}/../../data/reference/K03455.1.gtf",
+                "--genome", "${workspaceFolder}/../../data/reference/K03455.1.fasta",
+                "--target", "${workspaceFolder}/../../data/sequences/DQ396400.fasta",
+                "--output", "${workspaceFolder}/output/DQ396400.gtf",
+                "--sam2gtf", "${workspaceFolder}/../../soft/sam2gtf/target/release/sam2gtf",
+                "--tmp-dir","${workspaceFolder}/tmp.DQ396400",
+                "--guide","${workspaceFolder}/../../data/sequences/DQ396400.gtf",
             ],
         }
     ]

@@ -5,9 +5,9 @@ import os
 
 from pyfaidx import Fasta
 
-from classes.treader import TReader
-from classes.transcript import Transcript, Object
-from utils.common import *
+from ..classes.treader import TReader
+from ..classes.transcript import Transcript, Object
+from ..utils.common import *
 
 class TXGroup:
     """
@@ -21,6 +21,12 @@ class TXGroup:
     def __init__(self):
         self.objects = list()
         self.tid_map = dict() # transcript_id to position in objects list
+        
+    def __contains__(self,tid) -> bool:
+        return tid in self.tid_map
+    
+    def __len__(self) -> int:
+        return len(self.objects)
 
     def clear(self):
         """
