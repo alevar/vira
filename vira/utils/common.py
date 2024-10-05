@@ -608,9 +608,20 @@ def to_attribute_string(attrs: dict, gff=False,
         res = res.rstrip(";")
     return res
 
-def get_intervals(gtf_fname, feature="exon", invert=False):
-    res_intervals = dict()  # seqids and strand as keys, lists of introns as values1
+def get_intervals(gtf_fname:str,feature:str="exon",invert:bool=False) -> dict:
+    """
+    This function extracts intervals from a GTF file.
 
+    Parameters:
+    gtf_fname (str): The name of the GTF file to load.
+    feature (str, optional): The feature type to extract intervals from. Defaults to "exon".
+    invert (bool, optional): A flag indicating whether to invert the intervals. Defaults to False.
+
+    Returns:
+    dict: A dictionary of intervals extracted from the GTF file. Intervals are keys and transcript IDs are values.
+    """
+    res_intervals = dict() # seqids and strand as keys, lists of introns as values1
+    
     intervals = {}
     with open(gtf_fname, 'r') as inFP:
         for line in inFP:
@@ -621,24 +632,24 @@ def get_intervals(gtf_fname, feature="exon", invert=False):
                 tid = lcs[8].split("transcript_id \"", 1)[1].split("\"", 1)[0]
                 if tid not in intervals:
                     intervals[tid] = {"seqname": lcs[0],
-                                      "strand": lcs[6],
-                                      "intervals": []}
+                                  "strand": lcs[6],
+                                  "intervals": []}
                 intervals[tid]["intervals"].append((int(lcs[3]), int(lcs[4])))
 
     for tid, idata in intervals.items():
-        if invert:  # get introns
-            for ii in range(1, len(idata["intervals"][1:]), 1):
-                key = (idata["seqname"], idata["strand"])
-                res_intervals.setdefault(key, dict())
-                rit = (idata["intervals"][ii - 1][1] + 1, idata["intervals"][ii][0] - 1)
-                res_intervals[key].setdefault(rit, set())
+        if invert: # get introns
+            for ii in range(1,len(idata["intervals"]),1):
+                key = (idata["seqname"],idata["strand"])
+                res_intervals.setdefault(key,dict())
+                rit = (idata["intervals"][ii-1][1]+1,idata["intervals"][ii][0]-1)
+                res_intervals[key].setdefault(rit,set())
                 res_intervals[key][rit].add(tid)
         else:
             for ii in range(len(idata["intervals"])):
-                key = (idata["seqname"], idata["strand"])
-                res_intervals.setdefault(key, dict())
-                rit = (idata["intervals"][ii][0], idata["intervals"][ii][1])
-                res_intervals[key].setdefault(rit, set())
+                key = (idata["seqname"],idata["strand"])
+                res_intervals.setdefault(key,dict())
+                rit = (idata["intervals"][ii][0],idata["intervals"][ii][1])
+                res_intervals[key].setdefault(rit,set())
                 res_intervals[key][rit].add(tid)
 
     return res_intervals

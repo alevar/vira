@@ -25,11 +25,11 @@
             "args": [
                 "--annotation", "${workspaceFolder}/../../data/reference/K03455.1.gtf",
                 "--genome", "${workspaceFolder}/../../data/reference/K03455.1.fasta",
-                "--target", "${workspaceFolder}/../../data/sequences/DQ396400.fasta",
-                "--output", "${workspaceFolder}/output/DQ396400.gtf",
+                "--target", "${workspaceFolder}/../../data/sequences/AB049811.fasta",
+                "--output", "${workspaceFolder}/output/AB049811.gtf",
                 "--sam2gtf", "${workspaceFolder}/../../soft/sam2gtf/target/release/sam2gtf",
-                "--tmp-dir","${workspaceFolder}/tmp.DQ396400",
-                "--guide","${workspaceFolder}/../../data/sequences/DQ396400.gtf",
+                "--tmp-dir","${workspaceFolder}/tmp.AB049811",
+                "--guide","${workspaceFolder}/../../data/sequences/AB049811.gtf",
             ],
         }
     ]

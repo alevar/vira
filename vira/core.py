@@ -281,10 +281,17 @@ class Vira:
                     qry_genome_pos = qry_tx.genome_coordinate(qry_pos)
                     qry_to_trg_map[qry_genome_pos] = (None,op)  # No target mapping for inserted bases
                     qry_pos += 1
-            elif op == 'D' or op == 'N':  # Deletion or skipped region in the query
-                # Deletions affect only the target position
+            elif op == 'D':
+                prev_qry_pos = qry_pos - 1
+                prev_qry_genome_pos = qry_tx.genome_coordinate(prev_qry_pos)
+                assert prev_qry_genome_pos in qry_to_trg_map, f"Query position {prev_qry_genome_pos} not found in qry_to_trg_map"
+                assert qry_to_trg_map[prev_qry_genome_pos][1] in ['M', '=', 'X'], f"Previous operation at {prev_qry_genome_pos} is not a match"
+
                 for _ in range(length):
-                    trg_to_qry_map[trg_pos] = (None,op)  # No query mapping for deleted bases
+                    qry_to_trg_map[prev_qry_genome_pos] = [trg_pos,op]  # Extend the previous match to cover the deletion
+                    trg_pos += 1
+            elif op == 'N':
+                for _ in range(length):
                     trg_pos += 1
             elif op == 'S':  # Soft clipping (not aligned, still present in the query)
                 # Soft clipping affects only the query position
@@ -418,6 +425,7 @@ class Vira:
                 tx.data = {"cds": ""}
                 nt = tx.get_sequence(guide_tome.genome,use_cds=True)
                 tx.data["cds"] = translate(nt)
+                tx.merge_cds("longest")
 
         # iterate over reference transcripts and report any that were not annotated in the target
         for ref_tx in ref_tome:
@@ -439,7 +447,7 @@ class Vira:
             for c in target_tx.get_cds():
                 c[2].set_gid(ref_tx.get_attr("gene_id"))
             
-            target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
+            # target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
             
             # check all donor and acceptor sites noting whether they are conserved or not
             ref_sj_seq = self.extract_junction_seq(ref_tx, ref_tome.genome)
@@ -448,7 +456,7 @@ class Vira:
             sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
             
         # check all donor and acceptor positions noting whether they are conserved or not
-        donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
+        # donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
           
         cds_choices = {"miniprot":{}, "guide":{}}
         
@@ -460,6 +468,8 @@ class Vira:
             tid = target_tx.get_tid()
             # get the tid of the transcript whose cds was used in the deduplicated reference
             cds_tid = self.dedup_reference_cds_id_map[tid]
+            if not cds_tid in target_cds_tome: # skipped if not mapped over
+                continue
             target_cds_tx = target_cds_tome.get_by_tid(cds_tid)
 
             # check compatibility of the CDS with the transcript

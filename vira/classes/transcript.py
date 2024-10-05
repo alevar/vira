@@ -428,6 +428,20 @@ class Object:
             int: The genomic coordinate.
         """
         return self.start+pos
+    
+    def merge(self,obj: 'Object'):
+        """
+        Merge another object into the object.
+        keeps IDs and data of the self object, only modifies coordinates and attributes
+
+        Args:
+            obj (Object): The object to merge.
+
+        Returns:
+            None
+        """
+        self.start = min(self.start,obj.get_start())
+        self.end = max(self.end,obj.get_end())
 
 class Transcript (Object):
     """
@@ -572,6 +586,57 @@ class Transcript (Object):
             assert len(self.exons[self.cds.begin()])>0 and len(self.exons[self.cds.end()-1])>0,"invalid CDS detected in transcript when finalizing: "+self.tid
 
             self.assign_phase()
+
+    @staticmethod
+    def _intervaltree_data_reducer(how: str = "union") -> Callable:
+        """Outer function that takes additional arguments."""
+        def data_reducer(obj1, obj2):
+            """Inner function that does the merging."""
+            if how == "union":
+                obj1.merge(obj2)
+                return obj1
+            elif how == "longest":
+                return obj1 if obj1.len() > obj2.len() else obj2
+            elif how == "first":
+                # return the object with the smallest start position and if start is the same, the one with the smallest end position
+                return obj1 if obj1.get_start() < obj2.get_start() or (obj1.get_start() == obj2.get_start() and obj1.get_end() < obj2.get_end()) else obj2
+            else:
+                raise Exception("Invalid data reducer")
+        
+        return data_reducer
+
+    # @staticmethod
+    # def _intervaltree_data_reducer(obj1, obj2, how="union"):
+    #     if how == "union":
+    #         obj1.merge(obj2)
+    #         return obj1
+    #     elif how == "longest":
+    #         return obj1 if obj1.len() > obj2.len() else obj2
+    #     elif how == "first":
+    #         return obj1 if obj1.get_start() < obj2.get_start() else obj2
+    #     else:
+    #         raise Exception("Invalid data reducer")
+
+    def merge_exons(self) -> None:
+        """
+        Merge overlapping exons.
+
+        Returns:
+            None
+
+        """
+        self.exons.merge_overlaps(data_initializer = Transcript._intervaltree_data_reducer)
+        
+    def merge_cds(self,how="union") -> None:
+        """
+        Merge overlapping CDS regions.
+
+        Returns:
+            None
+
+        """
+        reducer = Transcript._intervaltree_data_reducer(how)
+        self.cds.merge_overlaps(data_reducer = reducer)
 
     def assign_phase(self, start_phase: int=0) -> None:
         """
