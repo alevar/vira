@@ -412,7 +412,7 @@ class Object:
         return self.end-self.start
     
     def get_sequence(self,genome):
-        sequence = genome[self.seqid][self.start:self.end].seq
+        sequence = genome[self.seqid][self.start-1:self.end-1].seq
         if self.strand == '-':
             sequence = reverse_complement(sequence)
         return sequence

@@ -876,3 +876,17 @@ def find_best_alignment(aligner, qry_seq, refs):
             best_alignment = alignments[best_i]
             
     return best_alignment, best_identity, best_ref_id
+
+# from https://github.com/gamcil/clinker/pull/55/commits/05951a71eb553e951a9df0c1a49737a2159a5ae3
+def extend_matrix_alphabet(matrix, codes='BXZJUO'):
+    """Extends the alphabet of a given substitution matrix.
+
+    Primarily for adding extended IUPAC codes to a matrix which does
+    not contain them (e.g. BLOSUM62), resulting in a ValueError
+    being thrown during sequence alignment.
+    """
+    missing_codes = set(codes).difference(matrix.alphabet)
+    if missing_codes:
+        missing_codes = ''.join(missing_codes)
+        matrix = matrix.select(matrix.alphabet + missing_codes)
+    return matrix

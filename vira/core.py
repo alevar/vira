@@ -65,16 +65,23 @@ class Vira:
         self.cds_aa_fasta_fname = self.tmp_dir+"cds_aa.fasta"
         self.exon_nt_fasta_fname = self.tmp_dir+"exon_nt.fasta"
         self.cds_sam_fname = self.tmp_dir+"cds_nt.sam"
+        self.exon_sam_pass1_fname = self.tmp_dir+"exon_nt.pass1.sam"
         self.exon_sam_fname = self.tmp_dir+"exon_nt.sam"
+        self.exon_sam2gtf_pass1_fname = self.tmp_dir+"exon_nt.pass1.sam2gtf.gtf"
         self.exon_sam2gtf_fname = self.tmp_dir+"exon_nt.sam2gtf.gtf"
+        self.pass1_junc_bed_fname = self.tmp_dir+"exon_nt.pass1.sam2gtf.junc.bed"
         self.cds_gtf_fname = self.tmp_dir+"cds.miniprot.gtf"
-        
+        self.guide_junc_bed_fname = self.tmp_dir+"guide.junc.bed"
         
         # Alignment
         self.aligner = Align.PairwiseAligner()
         self.aligner.open_gap_score = -10
         self.aligner.extend_gap_score = -0.5
         self.aligner.substitution_matrix = substitution_matrices.load("BLOSUM62")
+        self.aligner.substitution_matrix = extend_matrix_alphabet(
+            self.aligner.substitution_matrix,
+            codes='BXZJUO-.',
+        )
 
     def check_tools(self):
         if subprocess.call(f"command -v {self.minimap2}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
@@ -86,12 +93,17 @@ class Vira:
         if subprocess.call(f"command -v {self.sam2gtf}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
             raise EnvironmentError(f"sam2gtf is not installed or not available in PATH. Please install sam2gtf before running vira. Installation instructions can be found at: https://github.com/alevar/sam2gtf")
         
-        if self.miniprot is not None:
-            if subprocess.call(f"command -v {self.miniprot}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
-                raise EnvironmentError(f"miniprot is not installed or not available in PATH. Please install miniprot before running vira. Installation instructions can be found at: https://github.com/lh3/miniprot")
-            
-    def write_output(self):
-        print("Writing output file...")
+        if subprocess.call(f"command -v {self.miniprot}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+            raise EnvironmentError(f"miniprot is not installed or not available in PATH. Please install miniprot before running vira. Installation instructions can be found at: https://github.com/lh3/miniprot")
+        
+        # verify version of miniprot as well to be above 0.13-r248
+        version = subprocess.check_output(f"{self.miniprot} --version", shell=True).decode("utf-8").strip()
+        print(version)
+        v0 = int(version.split(".")[0])
+        v1 = int(version.split(".")[1].split("-")[0])
+        v2 = int(version.split("-")[1].split("r")[1])
+        if v0 < 0 or (v0 == 0 and v1 < 13) or (v0 == 0 and v1 == 13 and v2 < 248):
+            raise EnvironmentError(f"miniprot version {version} is not supported. Please install miniprot version 0.13-r248 or later. The miniprot version used is required to have the --spsc=<fname> option for specifying a list of trusted junctions")
 
     def extract_gene_protein_gtf(self, in_fname, genome, out_fname):
         # takes a gtf file, and extract one transcript per gene_id with its protein annotated
@@ -120,8 +132,91 @@ class Vira:
                 outFP.write(tx.to_gtf()+"\n")
                 
         return cds_id_map
+    
+    def extract_consensus_sjs(self, ref_gtf_fname, ref_fasta_fname, trg_gtf_fname, trg_fasta_fname, out_gtf_fname) -> None:
+        # given a gtf file  produced by the sam2gtf tool
+        # extracts a mapping of query junctions to target junctions
+        # for each query junction, computes what the consensus position is
+        # output the result in the format compatible with miniprot
+        # expected format: ctg  offset  +|-  D|A  score
+
+        # start by building transcriptomes for reference and target
+        ref_tome = Transcriptome()
+        ref_tome.load_genome(ref_fasta_fname)
+        ref_tome.build_from_file(ref_gtf_fname)
+        ref_tome.extract_introns()
+
+        target_tome = Transcriptome()
+        target_tome.load_genome(trg_fasta_fname)
+        target_tome.build_from_file(trg_gtf_fname)
+        target_tome.extract_introns()
+        # deduplicate target transcripts and convert transcript_ids
+        self.reassign_tids(target_tome)
+
+        # iterate over target transcripts
+        for target_tx in target_tome:
+            target_tx.data = dict()
+            target_tx.data["ref2trg_map"] = None
+            target_tx.data["trg2ref_map"] = None
+
+            # pull the corresponding transcript from reference
+            ref_tx = ref_tome.get_by_tid(target_tx.get_tid())
+
+            # assign gene_id based on the reference along with other attributes
+            target_tx.set_gid(ref_tx.get_attr("gene_id"))
+            for e in target_tx.get_exons():
+                e[2].set_gid(ref_tx.get_attr("gene_id"))
+            for c in target_tx.get_cds():
+                c[2].set_gid(ref_tx.get_attr("gene_id"))
+
+            target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
+
+        # extract junction mapping
+        donor_map = {} # holds the mapping between reference and target donor sites
+        acceptor_map = {} # holds the mapping between reference and target acceptor sites
+        for ref_tx in ref_tome.transcript_it():
+            for ref_i,ref_intron in enumerate(ref_tx.introns_it()):
+                # find position of the intron in the target genome
+                target_tx = target_tome.get_by_tid(ref_tx.get_tid())
+                if target_tx is None:
+                    continue
+
+                if ref_intron[0]-1 not in target_tx.data["ref2trg_map"] or ref_intron[1] not in target_tx.data["ref2trg_map"]:
+                    continue
+                trg_donor_pos = target_tx.data["ref2trg_map"][ref_intron[0]-1]
+                trg_acceptor_pos = target_tx.data["ref2trg_map"][ref_intron[1]]
+
+                if trg_donor_pos is None or trg_acceptor_pos is None:
+                    continue
+                if trg_donor_pos[1] != "M" or trg_acceptor_pos[1] != "M":
+                    continue
+
+                donor_map.setdefault(ref_intron[0],[]).append(trg_donor_pos)
+                acceptor_map.setdefault(ref_intron[1],[]).append(trg_acceptor_pos)
+
+        # verify consistency
+        for donor_pos in donor_map:
+            # assign the most common mapping as the target site
+            donor_map[donor_pos] = max(set(donor_map[donor_pos]), key=donor_map[donor_pos].count)[0]
+        for acceptor_pos in acceptor_map:
+            acceptor_map[acceptor_pos] = max(set(acceptor_map[acceptor_pos]), key=acceptor_map[acceptor_pos].count)[0]
+
+        # write out the results
+        with open(out_gtf_fname,"w+") as outFP:
+            for donor_pos in donor_map:
+                outFP.write(f"{target_tx.get_seqid()}\t{donor_map[donor_pos]}\t+\tD\t100\n")
+            for acceptor_pos in acceptor_map:
+                outFP.write(f"{target_tx.get_seqid()}\t{acceptor_map[acceptor_pos]-1}\t+\tA\t100\n")
+        return None
 
     def run(self):
+        # extract junctions from the guide if available
+        if self.guide is not None:
+            cmd = ["paftools.js","gff2bed","-j",self.guide]
+            print(" ".join(cmd)+" > "+self.guide_junc_bed_fname)
+            with open(self.guide_junc_bed_fname,"w+") as outFP:
+                subprocess.call(cmd,stdout=outFP)
+
         # extract the reference transcript
         cmd = [self.gffread,
                 "-g",self.genome,
@@ -131,15 +226,42 @@ class Vira:
         subprocess.call(cmd)
 
         # run minimap of transcript sequences to the target genome
-        cmd = [self.minimap2,"--for-only","-ax","splice",self.target,self.exon_nt_fasta_fname]
-        print(" ".join(cmd)+" > "+self.exon_sam_fname)
-        with open(self.exon_sam_fname,"w+") as outFP:
+        cmd = [self.minimap2,"--for-only","-a",
+               "-k9","-w3","--splice","--splice-flank=no","-g2k","-G9k","-A1","-B2","-O2,32","-E1,0","-b0","-C4","-z200","-un","--cap-sw-mem=0"]
+        if self.guide is not None:
+            cmd.extend(["--junc-bed",self.guide_junc_bed_fname,
+                        "--junc-bonus","100"]) # set high bonus for guide junctions
+        cmd.extend([self.target,self.exon_nt_fasta_fname])
+        print(" ".join(cmd)+" > "+self.exon_sam_pass1_fname)
+        with open(self.exon_sam_pass1_fname,"w+") as outFP:
             subprocess.call(cmd,stdout=outFP)
 
         # run sam2gtf
         cmd = [self.sam2gtf,
+            "-i",self.exon_sam_pass1_fname,
+            "-o",self.exon_sam2gtf_pass1_fname,
+            "-p","50"]
+        print(" ".join(cmd))
+        subprocess.call(cmd)
+
+        # extract consensus junctions from the pass1 alignment
+        self.extract_consensus_sjs(self.annotation, self.genome, self.exon_sam2gtf_pass1_fname, self.target, self.pass1_junc_bed_fname)
+        
+        # do 2nd pass using consensus junctions this time
+        cmd = [self.minimap2,"--for-only","-a",
+               "-k9","-w3","--splice","--splice-flank=no","-g2k","-G9k","-A1","-B2","-O2,32","-E1,0","-b0","-C4","-z200","-un","--cap-sw-mem=0"]
+        cmd.extend(["--junc-bed",self.pass1_junc_bed_fname,
+                    "--junc-bonus","100"])
+        cmd.extend([self.target,self.exon_nt_fasta_fname])
+        print(" ".join(cmd)+" > "+self.exon_sam_fname)
+        with open(self.exon_sam_fname,"w+") as outFP:
+            subprocess.call(cmd,stdout=outFP)
+        
+        # run sam2gtf
+        cmd = [self.sam2gtf,
             "-i",self.exon_sam_fname,
-            "-o",self.exon_sam2gtf_fname]
+            "-o",self.exon_sam2gtf_fname,
+            "-p","50"]
         print(" ".join(cmd))
         subprocess.call(cmd)
 
@@ -170,7 +292,10 @@ class Vira:
                     tid2gid[tid] = gid
         
         miniprot_gff_fname = self.tmp_dir+"miniprot.gff"
-        cmd = [self.miniprot,"--gff", self.target, self.cds_aa_fasta_fname]
+        cmd = [self.miniprot,
+               "--gff",
+                "--spsc="+self.pass1_junc_bed_fname,
+               self.target, self.cds_aa_fasta_fname]
         print(" ".join(cmd)+" > "+miniprot_gff_fname)
         with open(miniprot_gff_fname,"w+") as outFP:
             subprocess.call(cmd,stdout=outFP)
@@ -453,7 +578,7 @@ class Vira:
             ref_sj_seq = self.extract_junction_seq(ref_tx, ref_tome.genome)
             target_sj_seq = self.extract_junction_seq(target_tx, target_tome.genome)
             # compare donor acceptor pairs
-            sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
+            # sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
             
         # check all donor and acceptor positions noting whether they are conserved or not
         # donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
@@ -475,7 +600,8 @@ class Vira:
             # check compatibility of the CDS with the transcript
             target_chain = target_tx.get_chain()
             target_cds_chain = target_cds_tx.get_chain(use_cds=True)
-            assert target_cds_chain == cut_chain(target_chain, target_cds_chain[0][0], target_cds_chain[-1][1]), f"Transcript and CDS chains do not match for transcript {tid}"
+            if not target_cds_chain == cut_chain(target_chain, target_cds_chain[0][0], target_cds_chain[-1][1]):
+                continue
             # add the CDS to the transcript
             tmp_tx = copy.deepcopy(target_tx)
             for c in target_cds_tx.get_cds():
@@ -517,12 +643,14 @@ class Vira:
                 # assign the guide protein to the reference proteins
                 for tid in tids:
                     target_tx = target_tome.get_by_tid(tid)
+                    assert target_tx is not None, f"Transcript {tid} not found in the target genome"
                     guide_tx = guide_tome.get_by_tid(guide_tid)
                     
                     # check compatibility of the CDS with the transcript
                     target_chain = target_tx.get_chain()
                     guide_cds_chain = guide_tx.get_chain(use_cds=True)
-                    assert guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]), f"Transcript and guide CDS chains do not match for transcript {tid}"
+                    if not guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]):
+                        continue
                     # add the CDS to the transcript
                     tmp_tx = copy.deepcopy(target_tx)
                     for c in guide_tx.get_cds():
@@ -538,14 +666,14 @@ class Vira:
         # for each transcript compare choices
         # also ensure all agree between transcripts of the same gene
         for tx in target_tome:
-            if not tx.get_tid() in cds_choices["guide"]:
+            if tx.get_tid in cds_choices["miniprot"] and not tx.get_tid() in cds_choices["guide"]:
                 tx.cds = cds_choices["miniprot"][tx.get_tid()].cds
-            elif not tx.get_tid() in cds_choices["miniprot"]:
+            elif tx.get_tid in cds_choices["guide"] and not tx.get_tid() in cds_choices["miniprot"]:
                 tx.cds = cds_choices["guide"][tx.get_tid()].cds
             elif tx.get_tid() in cds_choices["guide"] and tx.get_tid() in cds_choices["miniprot"]:
                 tx.cds = cds_choices["guide"][tx.get_tid()].cds
             else:
-                pass
+                continue
 
         # write out the final GTF file
         with open(self.output,"w+") as outFP:
@@ -572,7 +700,11 @@ def main():
 
     vira = Vira(args)
     vira.run()
-    vira.write_output()
 
 if __name__ == "__main__":
     main()
+
+# TODO:
+# 1. Attributes
+#   - whether guide or miniprot used for CDS
+#   - whether guide or miniprot chains did not fit transcript chain
