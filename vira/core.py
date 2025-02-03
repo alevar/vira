@@ -12,11 +12,13 @@ from .utils.common import *
 
 from .classes.txgroup import Transcriptome, Gene, Bundle
 from .classes.transcript import Transcript, Object
+from .classes.splicegraph import SpliceGraph
 
 class Vira:
     def __init__(self, args):
         
         # OPTIONS
+        self.force_cds = args.force_cds
         self.keep_tmp = args.keep_tmp
         self.tmp_dir = standard_path(args.tmp_dir)
         if not os.path.exists(self.tmp_dir):
@@ -416,6 +418,9 @@ class Vira:
                     qry_to_trg_map[prev_qry_genome_pos] = [trg_pos,op]  # Extend the previous match to cover the deletion
                     trg_pos += 1
             elif op == 'N':
+                # we need to check here if it matches any of the query sites
+                # this way we could convert novel introns to matches
+                # alternatively, we could also do this 
                 for _ in range(length):
                     trg_pos += 1
             elif op == 'S':  # Soft clipping (not aligned, still present in the query)
@@ -506,6 +511,33 @@ class Vira:
             cds.append(obj)
         
         return cds
+    
+    def build_target2guide_map(self, guide_tome: Transcriptome, target_tome: Transcriptome, ref_tome: Transcriptome):
+        target2guide_map = {}
+        
+        guide_cds_map = {}
+        for tx in guide_tome:
+            if tx.has_cds():
+                aa = tx.data["cds"]
+                guide_cds_map.setdefault(aa,tx.get_tid())
+        
+        # load a map of all transcripts for each cds chain in the reference
+        ref_cds_map = {}
+        for tx in ref_tome:
+            if not tx.get_tid() in target_tome: # make sure the reference transcripts we are including are only those that were mapped over
+                continue
+            if tx.has_cds():
+                aa = tx.data["cds"]
+                ref_cds_map.setdefault(aa,[]).append(tx.get_tid())
+                
+        # for each reference protein - find the corresponding guide protein
+        for aa, tids in ref_cds_map.items():
+            # find matching guide protein by aligning against all guide proteins
+            alignment, identity, guide_tid = find_best_alignment(self.aligner, aa, guide_cds_map)
+            for tid in tids:
+                target2guide_map[tid] = guide_tid
+
+        return target2guide_map
 
     def build(self):
         # start by building transcriptomes for reference and target
@@ -541,6 +573,7 @@ class Vira:
             tx.data["cds"] = translate(nt)
 
         guide_tome = Transcriptome()
+        target2guide_map = {}
         if self.guide is not None:
             guide_tome.load_genome(self.target)
             guide_tome.build_from_file(self.guide)
@@ -551,6 +584,88 @@ class Vira:
                 nt = tx.get_sequence(guide_tome.genome,use_cds=True)
                 tx.data["cds"] = translate(nt)
                 tx.merge_cds("longest")
+
+            build_target2guide_map = self.build_target2guide_map(guide_tome, target_tome, ref_tome)
+
+            # if force_cds is set - we will force the CDS from the guide onto the transcript chain, even if that means merging adjacent exons together (can fix alignment artifacts such as spurious introns)
+            if self.force_cds:
+                # detect compatibility issues between alignment and guide annotation
+                # such as novel introns introduced by alignment which are covered by contiguous sequence in the guide
+                # those should be filled in with the guide sequence
+
+                # we have 2 options here:
+                # 1. we can use guide to match trascripts and see if the guide fixes any sequence. Then that sequence can be propagated across all other transcripts
+                # 2. otherwise, we can search for any introns that are not matched in the alignment
+
+                # i think option #1 is better since some artifacts in alignment might be difficult to detect (such as if there is a deletion at the end of an exon)
+                # whereas the guide will force correction only in the required positions and leave everything else intact
+
+                # then the logic will be as follows:
+                # basically repeat GUIDE procedure from below
+                # when incompatible sequence is found
+                # find violating region and create a fix for it.
+                # then iterate over all transcripts
+                # and check if any of the fixes apply to them
+                # and if so - apply the fix
+
+                # I feel like there's got to be a more elegant way of doing this, but I just can't think of anything unfortunately...
+
+                # what if, for evry transcript and every guide exon, we check if they overlap 
+                # (and how much - for example the max start and min end should work), and assert
+                # there are no gaps within
+
+                # the problem with this approach is that we might accidentally bridge true exons together
+                # due to simple alt isoforms
+
+                # instead, we should iterate over, only use matching transcripts between guide and target
+                # then we can collect patches and use these patches instead of exons to apply across all transcripts
+                for tid, guide_tid in target2guide_map.items():
+                    target_tx = target_tome.get_by_tid(tid)
+                    assert target_tx is not None, f"Transcript {tid} not found in the target genome"
+                    guide_tx = guide_tome.get_by_tid(guide_tid)
+                    
+                    # check compatibility of the CDS with the transcript
+                    target_chain = target_tx.get_chain()
+                    guide_cds_chain = guide_tx.get_chain(use_cds=True)
+                    if not guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]):
+                        # find the incompatibility and remember
+                        # guide difference target
+                        pass    
+
+
+                # what if we instead build a splice graph for the entire genome
+                # having nodes as exons and edges as introns
+                # this way, when we detect an incompatibility, we can remove nodes and create a new node instead
+                # and re-link all edges to the new node instead. That way by modifying it once, we can automatically have it updated for all transcripts?
+                
+                # first do partitioning of all exons like in g2t
+                
+                # can we include the guide in the same graph?
+                # if we detect a case where the only path from a to c
+                # in the guide is through b, then we should merge a and b and c into
+            
+                # collect all relevant chains together    
+                chains = []
+                for tx in target_tome.transcript_it():
+                    chain = [[x[0],x[1]-1,[('t',tx.get_tid())]] for x in tx.get_chain()] # -1 here to account for the inclusivity rules of the intervals in the transcriptome
+                    chains.append(chain)
+                for tx in guide_tome.transcript_it():
+                    chain = [[x[0],x[1]-1,[('g',tx.get_tid())]] for x in tx.get_chain()]
+                    chains.append(chain)
+
+                # partition chains into disjoint sets
+                partitioned_chains = partition_chains(chains)
+            
+                # build splicegraph
+                sg = SpliceGraph()
+                sg.add_from_chains(partitioned_chains)
+                print(sg)
+
+
+                # now, search for errors
+
+                
+                pass
 
         # iterate over reference transcripts and report any that were not annotated in the target
         for ref_tx in ref_tome:
@@ -582,7 +697,7 @@ class Vira:
             
         # check all donor and acceptor positions noting whether they are conserved or not
         # donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
-          
+        
         cds_choices = {"miniprot":{}, "guide":{}}
         
         #========================================================================
@@ -618,49 +733,26 @@ class Vira:
         #========================================================================
         # load the guide annotation where available
         if self.guide is not None:
-            # load a map of guide proteins against which we will be searching 
-            guide_cds_map = {}
-            for tx in guide_tome:
-                if tx.has_cds():
-                    aa = tx.data["cds"]
-                    guide_cds_map.setdefault(aa,tx.get_tid())
-            
-            # load a map of all transcripts for each cds chain in the reference
-            ref_cds_map = {}
-            for tx in ref_tome:
-                if not tid in target_tome: # make sure the reference transcripts we are including are only those that were mapped over
+            for tid, guide_tid in target2guide_map.items():
+                target_tx = target_tome.get_by_tid(tid)
+                assert target_tx is not None, f"Transcript {tid} not found in the target genome"
+                guide_tx = guide_tome.get_by_tid(guide_tid)
+                
+                # check compatibility of the CDS with the transcript
+                target_chain = target_tx.get_chain()
+                guide_cds_chain = guide_tx.get_chain(use_cds=True)
+                if not guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]):
                     continue
-                if tx.has_cds():
-                    aa = tx.data["cds"]
-                    ref_cds_map.setdefault(aa,[]).append(tx.get_tid())
-                    
-            # for each reference protein - find the corresponding guide protein
-            for aa, tids in ref_cds_map.items():
-                # find matching guide protein by aligning against all guide proteins
-                alignment, identity, guide_tid = find_best_alignment(self.aligner, aa, guide_cds_map)
-                if guide_tid is None:
-                    continue
-                # assign the guide protein to the reference proteins
-                for tid in tids:
-                    target_tx = target_tome.get_by_tid(tid)
-                    assert target_tx is not None, f"Transcript {tid} not found in the target genome"
-                    guide_tx = guide_tome.get_by_tid(guide_tid)
-                    
-                    # check compatibility of the CDS with the transcript
-                    target_chain = target_tx.get_chain()
-                    guide_cds_chain = guide_tx.get_chain(use_cds=True)
-                    if not guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]):
-                        continue
-                    # add the CDS to the transcript
-                    tmp_tx = copy.deepcopy(target_tx)
-                    for c in guide_tx.get_cds():
-                        tmp = copy.deepcopy(c[2])
-                        tmp.add_attribute("transcript_id",tid,replace=True)
-                        tmp_tx.add_cds(tmp)
-                    # get translated sequence
-                    nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
-                    tmp_tx.data["cds"] = translate(nt)
-                    cds_choices["guide"][tid] = tmp_tx
+                # add the CDS to the transcript
+                tmp_tx = copy.deepcopy(target_tx)
+                for c in guide_tx.get_cds():
+                    tmp = copy.deepcopy(c[2])
+                    tmp.add_attribute("transcript_id",tid,replace=True)
+                    tmp_tx.add_cds(tmp)
+                # get translated sequence
+                nt = tmp_tx.get_sequence(target_tome.genome,use_cds=True)
+                tmp_tx.data["cds"] = translate(nt)
+                cds_choices["guide"][tid] = tmp_tx
                 
         # compare the CDS choices ensuring consistency
         # for each transcript compare choices
@@ -687,6 +779,8 @@ def main():
     parser.add_argument('-t', '--target', required=True, type=str, help='Path to the target genome FASTA file')
     parser.add_argument('-q', '--guide', type=str, help='Optional path to the guide annotation file for the target genome. Transcripts and CDS from the guide will be used to validate the annotation')
     parser.add_argument('-o', '--output', type=str, help='Path to the output GTF file')
+    
+    parser.add_argument('--force-cds', action='store_true', help='Force the CDS from the guide onto the transcript chain, even if that means merging adjacent exons together (can fix alignment artifacts such as spurious introns). If the CDS does not fit the transcript chain, the transcript will be skipped')
 
     parser.add_argument('--gffread', type=str, default='gffread', help='Path to the gffread executable')
     parser.add_argument('--minimap2', type=str, default='minimap2', help='Path to the minimap2 executable')

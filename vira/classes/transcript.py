@@ -467,26 +467,29 @@ class Transcript (Object):
         if obj is not None:
             self.__dict__ = obj.to_transcript().__dict__.copy()
 
-    def merge(self,obj: Object):
+    def merge(self,obj: Object, merge_cds:bool=True):
         """
         Merge object into the transcript. Ensured transcript_ids match. Can merge Exons, CDS, and Transcripts into the Transcript.
         
         Args:
             obj (Object): The Object to merge.
+            merge_cds (bool, optional): Whether to merge CDS regions. Defaults to True.
         """
-        assert self.tid is None or self.tid == obj.get_attr("transcript_id"), "Transcript IDs do not match"
+        # assert self.tid is None or self.tid == obj.get_attr("transcript_id"), "Transcript IDs do not match"
         assert self.seqid is None or self.seqid == obj.get_seqid(), "Sequence IDs do not match"
         assert self.strand is None or self.strand == obj.get_strand(), "Strands do not match"
         
-        # if gene_id is not set, but the transcript_id is set and matches a known transcript_id - match gene_id
-        if self.gid is None and obj.get_attr("gene_id") is not None:
-            self.gid = obj.get_attr("gene_id")
-        elif self.gid is not None and obj.get_attr("gene_id") is None:
-            obj.add_attribute("gene_id",self.gid)
-        else:
-            assert self.gid == obj.get_attr("gene_id"), "Gene IDs do not match"
+        # # if gene_id is not set, but the transcript_id is set and matches a known transcript_id - match gene_id
+        # if self.gid is None and obj.get_attr("gene_id") is not None:
+        #     self.gid = obj.get_attr("gene_id")
+        # elif self.gid is not None and obj.get_attr("gene_id") is None:
+        #     obj.add_attribute("gene_id",self.gid)
+        # else:
+        #     assert self.gid == obj.get_attr("gene_id"), "Gene IDs do not match"
             
         for k,v in obj.get_attributes().items():
+            if k in self.attrs:
+                continue
             self.add_attribute(k,v)
         if obj.get_type() == Types.Exon:
             self.add_exon(obj)
@@ -494,9 +497,22 @@ class Transcript (Object):
             self.add_cds(obj)
         elif obj.get_type() == Types.Transcript:
             for exon in obj.get_exons():
-                self.add_exon(exon)
-            for cds in obj.get_cds():
-                self.add_cds(cds)
+                self.add_exon(exon[2])
+            self.merge_exons()
+            if merge_cds:
+                for cds in obj.get_cds():
+                    self.add_cds(cds[2])
+                self.merge_cds()
+
+    def own(self, obj: Object):
+        """
+        Converts attributes from the object to the current object
+        
+        Args:
+            obj (Object): The Object to own.
+        """
+        obj.set_tid(self.get_tid())
+        obj.set_gid(self.get_gid())
 
     def add_exon(self,obj: Object) -> bool: # returns True if sucessfully added
         """
@@ -504,17 +520,18 @@ class Transcript (Object):
 
         Args:
             obj (Object): The Object to add.
-
+            
         Returns:
             bool: True if the Object was successfully added, False otherwise.
 
         """
         if self.strand != obj.get_strand() or self.seqid != obj.get_seqid():
             return False
-        if self.tid != obj.get_attr("transcript_id"):
-            return False
+        # if self.tid != obj.get_attr("transcript_id"):
+        #     return False
         
         exon = obj.to_exon()
+        self.own(exon)
         self.start = min(self.start,exon.get_start())
         self.end = max(self.end,exon.get_end())
         self.exons.addi(exon.get_start(),exon.get_end(),exon)
@@ -617,7 +634,7 @@ class Transcript (Object):
     #     else:
     #         raise Exception("Invalid data reducer")
 
-    def merge_exons(self) -> None:
+    def merge_exons(self,how="union") -> None:
         """
         Merge overlapping exons.
 
@@ -625,7 +642,8 @@ class Transcript (Object):
             None
 
         """
-        self.exons.merge_overlaps(data_initializer = Transcript._intervaltree_data_reducer)
+        reducer = Transcript._intervaltree_data_reducer(how)
+        self.exons.merge_overlaps(data_reducer = reducer)
         
     def merge_cds(self,how="union") -> None:
         """

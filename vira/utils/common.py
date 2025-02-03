@@ -890,3 +890,64 @@ def extend_matrix_alphabet(matrix, codes='BXZJUO'):
         missing_codes = ''.join(missing_codes)
         matrix = matrix.select(matrix.alphabet + missing_codes)
     return matrix
+
+def partition_chains(chains):
+    """
+    This function partitions a list of chains into intervals based on their overlap.
+
+    Has to have labels for each chain (eg. transcript_id) attached to each interval in each chain
+    Args:
+        chains (list): A list of chains, where each chain is a list of intervals, and each interval is a tuple of start, end, and label.
+
+    Returns:
+        list: A list of intervals that are the result of partitioning the chains.
+    
+    Example:
+        chains = [
+            ([[0, 100, ["c1"]]]),
+            ([[100, 300, ["c2"]]]),
+            ([[50, 150, ["c3"]]])
+        ]
+        expected_res = [(0, 49, ['c1']), (50, 99, ['c1', 'c3']), (100, 100, ['c1', 'c2', 'c3']), (101, 150, ['c2', 'c3']), (151, 300, ['c2'])]
+        assert expected_res == partition_chains(chains)
+    
+    """
+    def _partition_chains(chain1, chain2):
+        bounds = []
+        
+        # Collect all interval bounds across the two chains
+        for start, end, label in chain1:
+            bounds.append((start, 1, label))
+            bounds.append((end + 1, -1, label))
+        for start, end, label in chain2:
+            bounds.append((start, 1, label))
+            bounds.append((end + 1, -1, label))
+        
+        bounds.sort()
+        
+        res = []
+        active_labels = set() # labels currently being processed
+        last_pos = None
+        
+        for pos, change, labels in bounds:
+            if last_pos is not None and pos != last_pos: # create a new interval
+                res.append(((last_pos, pos - 1, sorted(active_labels))))
+            
+            for label in labels:
+                if change == 1:
+                    active_labels.add(label)
+                elif change == -1:
+                    active_labels.discard(label)
+            
+            last_pos = pos
+        
+        return res
+
+    if not chains: # no chains left
+        return []
+    
+    res = chains[0]
+    for chain in chains[1:]: # recursively process all chains
+        res = _partition_chains(res, chain)
+
+    return res
