@@ -29,6 +29,7 @@ class Vira:
         self.sam2gtf = args.sam2gtf
         self.miniprot = args.miniprot
         self.gffread = args.gffread
+        self.snapper = args.snapper
         self.check_tools()
         
         
@@ -68,6 +69,7 @@ class Vira:
         self.exon_nt_fasta_fname = self.tmp_dir+"exon_nt.fasta"
         self.cds_sam_fname = self.tmp_dir+"cds_nt.sam"
         self.exon_sam_pass1_fname = self.tmp_dir+"exon_nt.pass1.sam"
+        self.exon_sam_pass2_fname = self.tmp_dir+"exon_nt.pass2.sam"
         self.exon_sam_fname = self.tmp_dir+"exon_nt.sam"
         self.exon_sam2gtf_pass1_fname = self.tmp_dir+"exon_nt.pass1.sam2gtf.gtf"
         self.exon_sam2gtf_fname = self.tmp_dir+"exon_nt.sam2gtf.gtf"
@@ -97,6 +99,10 @@ class Vira:
         
         if subprocess.call(f"command -v {self.miniprot}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
             raise EnvironmentError(f"miniprot is not installed or not available in PATH. Please install miniprot before running vira. Installation instructions can be found at: https://github.com/lh3/miniprot")
+        
+        if subprocess.call(f"command -v {self.snapper}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+            raise EnvironmentError(f"snapper is not installed or not available in PATH. Please install snapper before running vira. Installation instructions can be found at: https://github.com/alevar/snapper")
+        
         
         # verify version of miniprot as well to be above 0.13-r248
         version = subprocess.check_output(f"{self.miniprot} --version", shell=True).decode("utf-8").strip()
@@ -255,9 +261,14 @@ class Vira:
         cmd.extend(["--junc-bed",self.pass1_junc_bed_fname,
                     "--junc-bonus","100"])
         cmd.extend([self.target,self.exon_nt_fasta_fname])
-        print(" ".join(cmd)+" > "+self.exon_sam_fname)
-        with open(self.exon_sam_fname,"w+") as outFP:
+        print(" ".join(cmd)+" > "+self.exon_sam_pass2_fname)
+        with open(self.exon_sam_pass2_fname,"w+") as outFP:
             subprocess.call(cmd,stdout=outFP)
+        
+        # run snapper to align introns
+        cmd = [self.snapper,"--reference", self.annotation, "--sam", self.exon_sam_pass2_fname, "--output", self.exon_sam_fname]
+        print(" ".join(cmd))
+        subprocess.call(cmd)
         
         # run sam2gtf
         cmd = [self.sam2gtf,
@@ -585,87 +596,7 @@ class Vira:
                 tx.data["cds"] = translate(nt)
                 tx.merge_cds("longest")
 
-            build_target2guide_map = self.build_target2guide_map(guide_tome, target_tome, ref_tome)
-
-            # if force_cds is set - we will force the CDS from the guide onto the transcript chain, even if that means merging adjacent exons together (can fix alignment artifacts such as spurious introns)
-            if self.force_cds:
-                # detect compatibility issues between alignment and guide annotation
-                # such as novel introns introduced by alignment which are covered by contiguous sequence in the guide
-                # those should be filled in with the guide sequence
-
-                # we have 2 options here:
-                # 1. we can use guide to match trascripts and see if the guide fixes any sequence. Then that sequence can be propagated across all other transcripts
-                # 2. otherwise, we can search for any introns that are not matched in the alignment
-
-                # i think option #1 is better since some artifacts in alignment might be difficult to detect (such as if there is a deletion at the end of an exon)
-                # whereas the guide will force correction only in the required positions and leave everything else intact
-
-                # then the logic will be as follows:
-                # basically repeat GUIDE procedure from below
-                # when incompatible sequence is found
-                # find violating region and create a fix for it.
-                # then iterate over all transcripts
-                # and check if any of the fixes apply to them
-                # and if so - apply the fix
-
-                # I feel like there's got to be a more elegant way of doing this, but I just can't think of anything unfortunately...
-
-                # what if, for evry transcript and every guide exon, we check if they overlap 
-                # (and how much - for example the max start and min end should work), and assert
-                # there are no gaps within
-
-                # the problem with this approach is that we might accidentally bridge true exons together
-                # due to simple alt isoforms
-
-                # instead, we should iterate over, only use matching transcripts between guide and target
-                # then we can collect patches and use these patches instead of exons to apply across all transcripts
-                for tid, guide_tid in target2guide_map.items():
-                    target_tx = target_tome.get_by_tid(tid)
-                    assert target_tx is not None, f"Transcript {tid} not found in the target genome"
-                    guide_tx = guide_tome.get_by_tid(guide_tid)
-                    
-                    # check compatibility of the CDS with the transcript
-                    target_chain = target_tx.get_chain()
-                    guide_cds_chain = guide_tx.get_chain(use_cds=True)
-                    if not guide_cds_chain == cut_chain(target_chain, guide_cds_chain[0][0], guide_cds_chain[-1][1]):
-                        # find the incompatibility and remember
-                        # guide difference target
-                        pass    
-
-
-                # what if we instead build a splice graph for the entire genome
-                # having nodes as exons and edges as introns
-                # this way, when we detect an incompatibility, we can remove nodes and create a new node instead
-                # and re-link all edges to the new node instead. That way by modifying it once, we can automatically have it updated for all transcripts?
-                
-                # first do partitioning of all exons like in g2t
-                
-                # can we include the guide in the same graph?
-                # if we detect a case where the only path from a to c
-                # in the guide is through b, then we should merge a and b and c into
-            
-                # collect all relevant chains together    
-                chains = []
-                for tx in target_tome.transcript_it():
-                    chain = [[x[0],x[1]-1,[('t',tx.get_tid())]] for x in tx.get_chain()] # -1 here to account for the inclusivity rules of the intervals in the transcriptome
-                    chains.append(chain)
-                for tx in guide_tome.transcript_it():
-                    chain = [[x[0],x[1]-1,[('g',tx.get_tid())]] for x in tx.get_chain()]
-                    chains.append(chain)
-
-                # partition chains into disjoint sets
-                partitioned_chains = partition_chains(chains)
-            
-                # build splicegraph
-                sg = SpliceGraph()
-                sg.add_from_chains(partitioned_chains)
-                print(sg)
-
-
-                # now, search for errors
-
-                
-                pass
+            target2guide_map = self.build_target2guide_map(guide_tome, target_tome, ref_tome)
 
         # iterate over reference transcripts and report any that were not annotated in the target
         for ref_tx in ref_tome:
@@ -687,13 +618,15 @@ class Vira:
             for c in target_tx.get_cds():
                 c[2].set_gid(ref_tx.get_attr("gene_id"))
             
-            # target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
+            target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
             
             # check all donor and acceptor sites noting whether they are conserved or not
             ref_sj_seq = self.extract_junction_seq(ref_tx, ref_tome.genome)
             target_sj_seq = self.extract_junction_seq(target_tx, target_tome.genome)
             # compare donor acceptor pairs
             # sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
+            
+            self.fix_with_guide(target_tx, ref_tx, guide_tome)
             
         # check all donor and acceptor positions noting whether they are conserved or not
         # donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
@@ -770,6 +703,73 @@ class Vira:
         # write out the final GTF file
         with open(self.output,"w+") as outFP:
             outFP.write(target_tome.to_gtf())
+
+    def fix_with_guide(self, tx: Transcript, ref_tx: Transcript, guide_tome: Transcriptome):
+        # uses the ref2trg_map and trg2ref_map to find which positions on the transcript 
+        # should be contiguous based on the guide exons
+        # for every guide interval, maps over to the reference transcript,
+        # identifies intervals on reference where both reference transcript and guide are contiguous
+        # and returns their positions relative to the guide transcript
+
+        target_sub_chain = []
+        for gi in guide_tome.intervals():
+            # get the minimum gi start which is in the trg2ref_map
+            keys_in_interval = [key for key in tx.data["trg2ref_map"] if gi[0] <= key <= gi[1]]
+
+            min_gi_start = None
+            max_gi_end = None
+            if keys_in_interval:
+                min_gi_start = min(keys_in_interval)
+                max_gi_end = max(keys_in_interval)
+            else: # gi not found in reference
+                continue
+            
+            ref_start = tx.data["trg2ref_map"][min_gi_start][0]
+            ref_end = tx.data["trg2ref_map"][max_gi_end][0]
+            
+            # now take the reference chain and cut it to the ref_start and ref_end
+            ref_sub_chain = cut_chain(ref_tx.get_chain(), ref_start, ref_end)
+            # convert each interval back into the target space
+            for c in ref_sub_chain:
+                # get the minimum gi start which is in the trg2ref_map
+                keys_in_interval = [key for key in tx.data["ref2trg_map"] if c[0] <= key <= c[1]]
+
+                min_c_start = None
+                max_c_end = None
+                if keys_in_interval:
+                    min_c_start = min(keys_in_interval)
+                    max_c_end = max(keys_in_interval)
+                else: # c not found in reference
+                    continue
+                target_sub_chain.append([tx.data["ref2trg_map"][min_c_start][0],tx.data["ref2trg_map"][max_c_end][0]])
+
+        # each interval should now be contiguous
+        # apply these intervals to the target transcript to create contiguous blocks
+        dummy_exon = tx.get_exons()[0][2]
+        for c in target_sub_chain:
+            if c[1]-c[0] < 1:
+                continue
+            obj = Object()
+            obj.set_seqid(dummy_exon.get_seqid())
+            obj.set_strand(dummy_exon.get_strand())
+            obj.set_attributes({"transcript_id":tx.get_tid()})
+            obj.set_start(c[0])
+            obj.set_end(c[1])
+            tx.add_exon(obj)
+        tx.merge_exons()
+        
+    def fix_with_local(self, tx: Transcript, ref_tx: Transcript):
+        # use the ref2trg_map and trg2ref_map to identify a windown within which to perform unspliced alignment
+        # for each individual exon. This way, hopefully we can refine the exon boundaries better
+        for re in ref_tx.exons():
+            # get positions in the target transcript
+            keys_in_interval = [key for key in tx.data["ref2trg_map"] if re[0] <= key <= re[1]]
+            
+            min_re_start = None
+            max_re_end = None
+            
+        return
+        
         
 def main():
     parser = argparse.ArgumentParser(description="Tool for HIV-1 genome annotation")
@@ -786,6 +786,7 @@ def main():
     parser.add_argument('--minimap2', type=str, default='minimap2', help='Path to the minimap2 executable')
     parser.add_argument('--sam2gtf', type=str, default='sam2gtf', help='Path to the sam2gtf executable')
     parser.add_argument('--miniprot', type=str, default='miniprot', help='Path to the miniprot executable. If not set - minimap2 will be used to align nucleotide sequence of the CDS instead')
+    parser.add_argument('--snapper', type=str, default='snapper', help='Path to the snapper executable')
 
     parser.add_argument('--keep-tmp', action='store_true', help='Keep temporary files')
     parser.add_argument('--tmp-dir', type=str, default='./tmp', help='Directory to store temporary files')

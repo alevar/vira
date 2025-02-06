@@ -509,5 +509,14 @@ class Transcriptome (TXGroup):
                 
                 self.acceptors.setdefault(it[0],{"count":0,"seq":None})
                 self.acceptors[it[0]]["count"]+=1
-                
-        
+
+    def intervals(self):
+        """
+        Returns:
+            IntervalTree: A tree of all exons in the Transcriptome.
+        """
+        it = IntervalTree()
+        for obj in self.transcript_it():
+            it.update(obj.get_exons())
+        it.merge_overlaps()
+        return it

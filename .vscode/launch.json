@@ -29,6 +29,7 @@
                 "--output", "${workspaceFolder}/output/KT284371.1.gtf",
                 "--sam2gtf", "${workspaceFolder}/../HIV_Atlas_Creation/soft/sam2gtf/target/release/sam2gtf",
                 "--miniprot", "${workspaceFolder}/../HIV_Atlas_Creation/soft/miniprot/miniprot",
+                "--snapper", "snapper",
                 "--tmp-dir","${workspaceFolder}/tmp.KT284371.1",
                 "--guide","${workspaceFolder}/../HIV_Atlas_Creation/data/sequences/KT284371.1.gtf",
                 "--force-cds",
