@@ -12,6 +12,7 @@
 import os
 import re
 import csv
+import pysam
 import subprocess
 import numpy as np
 from enum import Enum
@@ -951,3 +952,186 @@ def partition_chains(chains):
         res = _partition_chains(res, chain)
 
     return res
+
+def parse_cigar_into_tuples(cigar_string: str):
+    """Convert CIGAR string to list of tuples"""
+    return [(int(length), op) for length, op in re.findall(r'(\d+)(\D)', cigar_string)]
+
+def build_cigar_from_tuples(ops):
+    """Convert list of CIGAR tuples to CIGAR string"""
+    return ''.join(f"{length}{op}" for length, op in ops)
+
+def elongate_cigar(cigar, elongate_length, from_end=False):
+    """
+    Elongate CIGAR string by n bases by changing ops to D. Can be done at the start or end of the CIGAR string.
+    D on I = DI, D on M = DM, D on D = 2D
+    """
+    cigar_copy = list(cigar) if not from_end else list(reversed(cigar))
+    new_cigar = []
+
+    remaining_length = elongate_length
+
+    while remaining_length > 0 and cigar_copy:
+        oplen, op = cigar_copy.pop(0)
+        if op == 'M': # add to M
+            new_cigar.append((remaining_length, 'D'))
+            remaining_length = 0
+            new_cigar.append((oplen, op))
+        elif op == 'D':
+            dlen = oplen + remaining_length
+            new_cigar.append((dlen, 'D'))
+            remaining_length = 0
+        elif op == 'I':
+            new_cigar.append((oplen, op))
+        else:
+            raise ValueError(f"Unsupported CIGAR operation: {op}")
+    assert remaining_length == 0, "Remaining length should be zero after processing all ops"
+
+    # add remaining ops
+    new_cigar.extend(cigar_copy)
+
+    return new_cigar if not from_end else new_cigar[::-1]
+
+def shorten_cigar(cigar, shorten_length, from_end=False):
+    """
+    Shorten CIGAR string by n bases by changing ops to I. Can be done at the start or end of the CIGAR string.
+    I on M = I, I on D = 0, I on I = skip to next non-I op
+    """
+
+    cigar_copy = list(cigar) if not from_end else list(reversed(cigar))
+    new_cigar = []
+
+    remaining_length = shorten_length
+
+    while remaining_length > 0 and cigar_copy:
+        oplen, op = cigar_copy.pop(0)
+        if op == 'M': # consume M and replace with I
+            ilen = min(oplen, remaining_length)
+            new_cigar.append((ilen, 'I'))
+            remaining_length -= ilen
+            if oplen > ilen:
+                new_cigar.append((oplen - ilen, op))
+        elif op == 'D': # negate D
+            ilen = min(oplen, remaining_length)
+            remaining_length -= ilen
+            if oplen > ilen:
+                new_cigar.append((oplen - ilen, op))
+        elif op == 'I': # skip I until next op since new I must always consume positions on alignment
+            new_cigar.append((oplen, op))
+        else:
+            raise ValueError(f"Unsupported CIGAR operation: {op}")
+        
+    assert remaining_length == 0, "Remaining length should be zero after processing all ops"
+
+    # add remaining ops
+    new_cigar.extend(cigar_copy)
+
+    return new_cigar if not from_end else new_cigar[::-1]
+
+
+def shorten_cigar_inplace(cigar, shorten_length:int, from_end:bool=False, offset:int=0):
+    """
+    Shorten CIGAR string in place by n bases by changing ops to I. Can be done at the start or end of the CIGAR string.
+    I on M = I, I on D = 0, I on I = skip to next non-I op.
+    """
+    if from_end:
+        cigar.reverse()
+
+    idx = 0
+    remaining_length = shorten_length
+    cur_offset = 0
+
+    while remaining_length > 0 and idx < len(cigar):
+        oplen, op = cigar[idx]
+        
+        if cur_offset<offset:
+            # skip until offset is reached
+            if oplen > offset - cur_offset: # split current operation and we are done
+                cigar.insert(idx, (offset - cur_offset, op))
+                oplen -= offset - cur_offset
+                # update the current operation
+                cigar[idx+1] = (oplen, op)
+                cur_offset = offset
+                idx += 1
+            else: # consume the whole operation
+                cur_offset += oplen
+                idx += 1
+                continue
+
+        if op == 'M':  # consume M and replace with I
+            ilen = min(oplen, remaining_length)
+            cigar[idx] = (ilen, 'I')
+            remaining_length -= ilen
+            if oplen > ilen:
+                cigar.insert(idx + 1, (oplen - ilen, 'M'))
+            idx += 1
+        elif op == 'D':  # negate D
+            ilen = min(oplen, remaining_length)
+            remaining_length -= ilen
+            if oplen > ilen:
+                cigar[idx] = (oplen - ilen, 'D')
+                idx += 1
+            else:
+                del cigar[idx]  # remove this operation if fully consumed
+        elif op == 'I':  # skip I
+            idx += 1
+        else:
+            raise ValueError(f"Unsupported CIGAR operation: {op}")
+
+    assert remaining_length == 0, "Remaining length should be zero after processing all ops"
+
+    if from_end:
+        cigar.reverse()
+        
+        
+def elongate_cigar_inplace(cigar, elongate_length:int, from_end:bool=False, offset:int=0):
+    """
+    Elongate CIGAR string by n bases by changing ops to D. Can be done at the start or end of the CIGAR string.
+    Modifies the CIGAR list in-place.
+    D on I = DI, D on M = DM, D on D = 2D
+    """
+    # Reverse cigar for processing from the end if needed
+    if from_end:
+        cigar.reverse()
+
+    remaining_length = elongate_length
+    idx = 0
+    cur_offset = 0
+
+    while remaining_length > 0 and idx < len(cigar):
+        oplen, op = cigar[idx]
+        
+        if cur_offset<offset:
+            # skip until offset is reached
+            if oplen > offset - cur_offset: # split current operation and we are done
+                cigar.insert(idx, (offset - cur_offset, op))
+                oplen -= offset - cur_offset
+                # update the current operation
+                cigar[idx+1] = (oplen, op)
+                cur_offset = offset
+                idx += 1
+            else: # consume the whole operation
+                cur_offset += oplen
+                idx += 1
+                continue
+
+        if op == 'M':  # Add D to M
+            cigar.insert(idx, (remaining_length, 'D'))
+            remaining_length = 0
+            idx += 2  # Skip the newly inserted D and the current M
+        elif op == 'D':  # Add to existing D
+            cigar[idx] = (oplen + remaining_length, 'D')
+            remaining_length = 0
+            idx += 1
+        elif op == 'I':  # Skip I
+            idx += 1
+        else:
+            raise ValueError(f"Unsupported CIGAR operation: {op}")
+
+    # If remaining_length is non-zero, it means we need to add a new D at the end
+    if remaining_length > 0:
+        cigar.append((remaining_length, 'D'))
+
+    # Reverse the cigar back if processed from the end
+    if from_end:
+        cigar.reverse()

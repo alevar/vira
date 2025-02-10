@@ -1,6 +1,8 @@
 import os
 import re
+import sys
 import copy
+import pysam
 import shutil
 import argparse
 import subprocess
@@ -47,7 +49,7 @@ class Vira:
         
         
         # INPUT FILES
-        # create cop;ies of files in tmp directory for use in the pipeline
+        # create copies of files in tmp directory for use in the pipeline
         self.annotation = self.tmp_dir+"reference.gtf"
         shutil.copyfile(args.annotation, self.annotation)
         self.genome = self.tmp_dir+"reference.fasta"
@@ -70,6 +72,7 @@ class Vira:
         self.cds_sam_fname = self.tmp_dir+"cds_nt.sam"
         self.exon_sam_pass1_fname = self.tmp_dir+"exon_nt.pass1.sam"
         self.exon_sam_pass2_fname = self.tmp_dir+"exon_nt.pass2.sam"
+        self.exon_sam_snapper_fname = self.tmp_dir+"exon_nt.snapper.sam"
         self.exon_sam_fname = self.tmp_dir+"exon_nt.sam"
         self.exon_sam2gtf_pass1_fname = self.tmp_dir+"exon_nt.pass1.sam2gtf.gtf"
         self.exon_sam2gtf_fname = self.tmp_dir+"exon_nt.sam2gtf.gtf"
@@ -141,83 +144,7 @@ class Vira:
                 
         return cds_id_map
     
-    def extract_consensus_sjs(self, ref_gtf_fname, ref_fasta_fname, trg_gtf_fname, trg_fasta_fname, out_gtf_fname) -> None:
-        # given a gtf file  produced by the sam2gtf tool
-        # extracts a mapping of query junctions to target junctions
-        # for each query junction, computes what the consensus position is
-        # output the result in the format compatible with miniprot
-        # expected format: ctg  offset  +|-  D|A  score
-
-        # start by building transcriptomes for reference and target
-        ref_tome = Transcriptome()
-        ref_tome.load_genome(ref_fasta_fname)
-        ref_tome.build_from_file(ref_gtf_fname)
-        ref_tome.extract_introns()
-
-        target_tome = Transcriptome()
-        target_tome.load_genome(trg_fasta_fname)
-        target_tome.build_from_file(trg_gtf_fname)
-        target_tome.extract_introns()
-        # deduplicate target transcripts and convert transcript_ids
-        self.reassign_tids(target_tome)
-
-        # iterate over target transcripts
-        for target_tx in target_tome:
-            target_tx.data = dict()
-            target_tx.data["ref2trg_map"] = None
-            target_tx.data["trg2ref_map"] = None
-
-            # pull the corresponding transcript from reference
-            ref_tx = ref_tome.get_by_tid(target_tx.get_tid())
-
-            # assign gene_id based on the reference along with other attributes
-            target_tx.set_gid(ref_tx.get_attr("gene_id"))
-            for e in target_tx.get_exons():
-                e[2].set_gid(ref_tx.get_attr("gene_id"))
-            for c in target_tx.get_cds():
-                c[2].set_gid(ref_tx.get_attr("gene_id"))
-
-            target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
-
-        # extract junction mapping
-        donor_map = {} # holds the mapping between reference and target donor sites
-        acceptor_map = {} # holds the mapping between reference and target acceptor sites
-        for ref_tx in ref_tome.transcript_it():
-            for ref_i,ref_intron in enumerate(ref_tx.introns_it()):
-                # find position of the intron in the target genome
-                target_tx = target_tome.get_by_tid(ref_tx.get_tid())
-                if target_tx is None:
-                    continue
-
-                if ref_intron[0]-1 not in target_tx.data["ref2trg_map"] or ref_intron[1] not in target_tx.data["ref2trg_map"]:
-                    continue
-                trg_donor_pos = target_tx.data["ref2trg_map"][ref_intron[0]-1]
-                trg_acceptor_pos = target_tx.data["ref2trg_map"][ref_intron[1]]
-
-                if trg_donor_pos is None or trg_acceptor_pos is None:
-                    continue
-                if trg_donor_pos[1] != "M" or trg_acceptor_pos[1] != "M":
-                    continue
-
-                donor_map.setdefault(ref_intron[0],[]).append(trg_donor_pos)
-                acceptor_map.setdefault(ref_intron[1],[]).append(trg_acceptor_pos)
-
-        # verify consistency
-        for donor_pos in donor_map:
-            # assign the most common mapping as the target site
-            donor_map[donor_pos] = max(set(donor_map[donor_pos]), key=donor_map[donor_pos].count)[0]
-        for acceptor_pos in acceptor_map:
-            acceptor_map[acceptor_pos] = max(set(acceptor_map[acceptor_pos]), key=acceptor_map[acceptor_pos].count)[0]
-
-        # write out the results
-        with open(out_gtf_fname,"w+") as outFP:
-            for donor_pos in donor_map:
-                outFP.write(f"{target_tx.get_seqid()}\t{donor_map[donor_pos]}\t+\tD\t100\n")
-            for acceptor_pos in acceptor_map:
-                outFP.write(f"{target_tx.get_seqid()}\t{acceptor_map[acceptor_pos]-1}\t+\tA\t100\n")
-        return None
-
-    def run(self):
+    def run_commands(self):
         # extract junctions from the guide if available
         if self.guide is not None:
             cmd = ["paftools.js","gff2bed","-j",self.guide]
@@ -266,9 +193,28 @@ class Vira:
             subprocess.call(cmd,stdout=outFP)
         
         # run snapper to align introns
-        cmd = [self.snapper,"--reference", self.annotation, "--sam", self.exon_sam_pass2_fname, "--output", self.exon_sam_fname]
+        cmd = [self.snapper,"--reference", self.annotation, "--sam", self.exon_sam_pass2_fname, "--output", self.exon_sam_snapper_fname, "--qry_intron_match_score", "100"]
         print(" ".join(cmd))
         subprocess.call(cmd)
+
+        # now that the alignment matches reference donor/acceptor positions - time to build ocnsensus intron length
+        donor_map, acceptor_map = self.extract_intron_map(self.annotation, self.exon_sam_snapper_fname)
+        # build consensus acceptor maps
+        donor_consensus_map = {}
+        acceptor_consensus_map = {}
+        for dp, data in donor_map.items():
+            # set the donor position to the position with the highest count or first in case of a tie
+            max_freq_pos = max(data.items(), key=lambda x: x[1])[0]
+            for pos, freq in data.items():
+                donor_consensus_map[pos] = max_freq_pos
+        for ap, data in acceptor_map.items():
+            # set the acceptor position to the position with the highest count or first in case of a tie
+            max_freq_pos = max(data.items(), key=lambda x: x[1])[0]
+            for pos, freq in data.items():
+                acceptor_consensus_map[pos] = max_freq_pos
+            
+        # now we need to apply these consensus positions to the alignment
+        self.apply_consensus_introns(donor_consensus_map, acceptor_consensus_map, self.exon_sam_snapper_fname, self.exon_sam_fname)
         
         # run sam2gtf
         cmd = [self.sam2gtf,
@@ -277,6 +223,14 @@ class Vira:
             "-p","50"]
         print(" ".join(cmd))
         subprocess.call(cmd)
+
+        # snapper only performs correction such that the donor/acceptor sites match with the reference
+        # however, if the intron length was a bit off (due to an extra D or I operation in CIGAR) - snapper can't do anything about it
+        # we can instead perform majority vote for a consensus donor and acceptor site (for each reference donor/acceptor site since we know the mapping now from snapper)
+        # and then force the consensus positions for each
+
+        # extract donor/acceptor position mapping
+
 
         # do the proteins
         # begin by extracting deduplicated CDSs from the target genome
@@ -343,44 +297,131 @@ class Vira:
         with open(self.cds_gtf_fname,"w+") as outFP:
             outFP.write(tome.to_gtf())
 
+    def run(self):
+        self.run_commands()
         # combine annotated transcripts, CDSs and guide annotation together
         # for each transcript/cds annotate any differences
         self.build()
-        
-    def compare_intron_sets(self, ref_tome: Transcriptome, target_tome: Transcriptome):
-        # verifies consistency of intron mapping between reference and target genomes
-        # for every reference donor/acceptor - make sure there is only one corresponding target donor/acceptor
-        # raise issues otherwise
 
+    def extract_consensus_sjs(self, ref_gtf_fname, ref_fasta_fname, trg_gtf_fname, trg_fasta_fname, out_gtf_fname) -> None:
+        # given a gtf file  produced by the sam2gtf tool
+        # extracts a mapping of query junctions to target junctions
+        # for each query junction, computes what the consensus position is
+        # output the result in the format compatible with miniprot
+        # expected format: ctg  offset  +|-  D|A  score
+
+        # start by building transcriptomes for reference and target
+        ref_tome = Transcriptome()
+        ref_tome.load_genome(ref_fasta_fname)
+        ref_tome.build_from_file(ref_gtf_fname)
+        ref_tome.extract_introns()
+
+        target_tome = Transcriptome()
+        target_tome.load_genome(trg_fasta_fname)
+        target_tome.build_from_file(trg_gtf_fname)
+        target_tome.extract_introns()
+        # deduplicate target transcripts and convert transcript_ids
+        self.reassign_tids(target_tome)
+
+        # iterate over target transcripts
+        for target_tx in target_tome:
+            target_tx.data = dict()
+            target_tx.data["ref2trg_map"] = None
+            target_tx.data["trg2ref_map"] = None
+
+            # pull the corresponding transcript from reference
+            ref_tx = ref_tome.get_by_tid(target_tx.get_tid())
+
+            # assign gene_id based on the reference along with other attributes
+            target_tx.set_gid(ref_tx.get_attr("gene_id"))
+            for e in target_tx.get_exons():
+                e[2].set_gid(ref_tx.get_attr("gene_id"))
+            for c in target_tx.get_cds():
+                c[2].set_gid(ref_tx.get_attr("gene_id"))
+
+            target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx.get_start())
+
+        # extract junction mapping
         donor_map = {} # holds the mapping between reference and target donor sites
         acceptor_map = {} # holds the mapping between reference and target acceptor sites
         for ref_tx in ref_tome.transcript_it():
             for ref_i,ref_intron in enumerate(ref_tx.introns_it()):
                 # find position of the intron in the target genome
                 target_tx = target_tome.get_by_tid(ref_tx.get_tid())
-                
+                if target_tx is None:
+                    continue
+
+                if ref_intron[0]-1 not in target_tx.data["ref2trg_map"] or ref_intron[1] not in target_tx.data["ref2trg_map"]:
+                    continue
                 trg_donor_pos = target_tx.data["ref2trg_map"][ref_intron[0]-1]
                 trg_acceptor_pos = target_tx.data["ref2trg_map"][ref_intron[1]]
 
-                assert trg_donor_pos is not None and trg_donor_pos[1]=="M", f"Target donor site not found for reference donor site {ref_intron[0]}"
-                assert trg_acceptor_pos is not None and trg_acceptor_pos[1]=="M", f"Target acceptor site not found for reference acceptor site {ref_intron[1]}"
+                if trg_donor_pos is None or trg_acceptor_pos is None:
+                    continue
+                if trg_donor_pos[1] != "M" or trg_acceptor_pos[1] != "M":
+                    continue
 
                 donor_map.setdefault(ref_intron[0],[]).append(trg_donor_pos)
                 acceptor_map.setdefault(ref_intron[1],[]).append(trg_acceptor_pos)
 
         # verify consistency
         for donor_pos in donor_map:
-            assert len(set(donor_map[donor_pos])) == 1, f"Multiple target donor sites found for reference donor site {donor_pos}: {donor_map[donor_pos]}"
-            # set the target donor site to the first element in the list
-            donor_map[donor_pos] = donor_map[donor_pos][0][0]
+            # assign the most common mapping as the target site
+            donor_map[donor_pos] = max(set(donor_map[donor_pos]), key=donor_map[donor_pos].count)[0]
         for acceptor_pos in acceptor_map:
-            assert len(set(acceptor_map[acceptor_pos])) == 1, f"Multiple target acceptor sites found for reference acceptor site {acceptor_pos}: {acceptor_map[acceptor_pos]}"
-            # set the target acceptor site to the first element in the list
-            acceptor_map[acceptor_pos] = acceptor_map[acceptor_pos][0][0]
+            acceptor_map[acceptor_pos] = max(set(acceptor_map[acceptor_pos]), key=acceptor_map[acceptor_pos].count)[0]
+
+        # write out the results
+        with open(out_gtf_fname,"w+") as outFP:
+            for donor_pos in donor_map:
+                outFP.write(f"{target_tx.get_seqid()}\t{donor_map[donor_pos]}\t+\tD\t100\n")
+            for acceptor_pos in acceptor_map:
+                outFP.write(f"{target_tx.get_seqid()}\t{acceptor_map[acceptor_pos]-1}\t+\tA\t100\n")
+        return None
+
+    def extract_intron_map(self, qry_tome_fname: str, trg_aln_fname: str):
+        # extract the mapping of introns from reference to target
+        # for each donor and acceptor site in the reference - find the corresponding donor and acceptor site in the target
+        donor_map = {} # holds the mapping between reference and target donor sites
+        acceptor_map = {} # holds the mapping between reference and target acceptor sites
+
+        # load the reference transcriptome
+        qry_tome = Transcriptome()
+        qry_tome.build_from_file(qry_tome_fname)
+
+        # iterate over alignments
+        for read in pysam.AlignmentFile(trg_aln_fname, "r"):
+            if read.is_unmapped or not read.cigarstring or read.is_secondary:
+                continue
+
+            try:
+                qry_tx = qry_tome.get_by_tid(read.query_name)
+
+                # process the cigar to get the mapping
+                trg_pos = read.reference_start
+                ref2trg_map, _ = self.process_cigar(read.cigarstring, qry_tx, trg_pos)
+
+                for it in qry_tx.introns_it():
+                    donor_pos = it[0]-1
+                    acceptor_pos = it[1]
+
+                    assert donor_pos in ref2trg_map, f"Donor position {donor_pos} not found in ref2trg_map"
+                    assert acceptor_pos in ref2trg_map, f"Acceptor position {acceptor_pos} not found in ref2trg_map"
+                    
+                    trg_donor_pos, _ = ref2trg_map[donor_pos]
+                    trg_acceptor_pos, _ = ref2trg_map[acceptor_pos]
+
+                    donor_map.setdefault(donor_pos,{}).setdefault(trg_donor_pos,0)
+                    donor_map[donor_pos][trg_donor_pos] += 1
+                    acceptor_map.setdefault(acceptor_pos,{}).setdefault(trg_acceptor_pos,0)
+                    acceptor_map[acceptor_pos][trg_acceptor_pos] += 1
+
+            except Exception as e:
+                sys.stderr.write(f"Error processing {read.query_name}: {str(e)}\n")
 
         return donor_map, acceptor_map
-
-    def process_cigar(self, cigar_string: str, qry_tx: Transcript, trg_tx: Transcript):
+    
+    def process_cigar(self, cigar_string: str, qry_tx: Transcript, trg_start:int):
         """
         Process CIGAR string to create a mapping from query genome positions
         to target positions.
@@ -391,11 +432,11 @@ class Vira:
         :return: A dictionary mapping qry positions to target positions
         """
         # CIGAR operation regex
-        cigar_operations = re.findall(r'(\d+)([MIDNSHP=X])', cigar_string)
+        cigar_operations = parse_cigar_into_tuples(cigar_string)
         
         # Initialize positions
         qry_pos = 0
-        trg_pos = trg_tx.start
+        trg_pos = trg_start
 
         # Maps to track reference to query and query to reference
         qry_to_trg_map = {}
@@ -403,7 +444,6 @@ class Vira:
 
         # Process each CIGAR operation
         for length, op in cigar_operations:
-            length = int(length)
 
             if op == 'M' or op == '=' or op == 'X':  # Match/Mismatch
                 for _ in range(length):
@@ -445,6 +485,112 @@ class Vira:
                 continue
 
         return qry_to_trg_map, trg_to_qry_map
+    
+    def adjust_cigar_introns(self, cigarstring, aln_start, donor_consensus_map, acceptor_consensus_map):
+        # # adjust the positions of the introns in the cigar string based on the provided maps
+        # map contains a dict of positions mapping them to consensus positions
+        # for every donor/acceptor site in the alignment - the method checks the provided maps
+        # and applies the consensus position if positions are matching
+        # the alignment is modified by updating cigar with I or D operations at the earliest available site before donor or after acceptor
+    
+        ops = parse_cigar_into_tuples(cigarstring)
+
+        pos = aln_start
+
+        cigar_idx = 0
+        while cigar_idx < len(ops):
+            oplen, op = ops[cigar_idx]
+            if op == 'N':
+                # get donor and acceptor positions
+                cur_donor_pos = pos - 1
+                pos += oplen
+                cur_acceptor_pos = pos
+
+                new_donor_pos = donor_consensus_map.get(cur_donor_pos, cur_donor_pos)
+                new_acceptor_pos = acceptor_consensus_map.get(cur_acceptor_pos, cur_acceptor_pos)
+
+                if new_donor_pos != cur_donor_pos:
+                    sub_ops = ops[:cigar_idx]
+                    if new_donor_pos < cur_donor_pos:
+                        # insert an insertion at the earliest available site after acceptor
+                        shorten_cigar_inplace(sub_ops, cur_donor_pos-new_donor_pos, from_end=True, offset=2)
+                    else:
+                        # insert a deletion at the earliest available site before donor
+                        elongate_cigar_inplace(sub_ops, new_donor_pos-cur_donor_pos, from_end=True, offset=2)
+                    ops = ops[:cigar_idx+1] + ops[cigar_idx:]
+
+                # replace current RefSkip with updated length
+                new_intron_length = (new_acceptor_pos - new_donor_pos)-1
+                ops[cigar_idx] = (new_intron_length,'N')
+
+                if new_acceptor_pos != cur_acceptor_pos:
+                    sub_ops = ops[cigar_idx+1:]
+                    if new_acceptor_pos > cur_acceptor_pos:
+                        # insert a deletion at the earliest available site after acceptor
+                        shorten_cigar_inplace(sub_ops, new_acceptor_pos-cur_acceptor_pos, from_end=False, offset=2)
+                    else:
+                        # insert an insertion at the earliest available site before donor
+                        elongate_cigar_inplace(sub_ops, cur_acceptor_pos-new_acceptor_pos, from_end=False, offset=2)
+                    ops = ops[:cigar_idx+1] + sub_ops
+
+            else:
+                if op in ['M', '=', 'X']:
+                    pos += oplen
+                elif op == 'I':
+                    pass
+                elif op == 'D':
+                    pos += oplen
+                elif op == 'S':
+                    pass
+                elif op == 'H':
+                    pass
+                else:
+                    raise ValueError(f"Invalid CIGAR operation {op}")
+                
+            cigar_idx += 1
+
+        return build_cigar_from_tuples(ops)
+
+    def apply_consensus_introns(self, donor_consensus_map, acceptor_consensus_map, in_sam_fname, out_sam_fname):
+        # adjust the positions of the introns in the alignment based on the provided maps
+        # map contains a dict of positions mapping them to consensus positions
+        # for every donor/acceptor site in the alignment - the method checks the provided maps
+        # and applies the consensus position if positions are matching
+        # the alignment is modified by updating cigar with I or D operations at the earliest available site before donor or after acceptor
+        input_mode = 'rb' if in_sam_fname.endswith('.bam') else 'r'
+        output_mode = 'wb' if out_sam_fname.endswith('.bam') else 'wh'
+
+        with pysam.AlignmentFile(in_sam_fname, input_mode) as infile, \
+            pysam.AlignmentFile(out_sam_fname, output_mode, template=infile) as outfile:
+
+            for read in infile:
+                if read.is_unmapped or not read.cigarstring:
+                    outfile.write(read)
+                    continue
+
+                try:
+                    new_cigar = self.adjust_cigar_introns(read.cigarstring, read.reference_start, donor_consensus_map, acceptor_consensus_map)
+                    
+                    # Create modified read
+                    modified_read = pysam.AlignedSegment(outfile.header)
+                    modified_read.set_tags(read.get_tags())
+                    modified_read.query_name = read.query_name
+                    modified_read.query_sequence = read.query_sequence
+                    modified_read.flag = read.flag
+                    modified_read.reference_id = read.reference_id
+                    modified_read.reference_start = read.reference_start
+                    modified_read.mapping_quality = read.mapping_quality
+                    modified_read.cigarstring = new_cigar
+                    modified_read.query_qualities = read.query_qualities
+                    modified_read.next_reference_id = read.next_reference_id
+                    modified_read.next_reference_start = read.next_reference_start
+                    modified_read.template_length = read.template_length
+
+                    outfile.write(modified_read)
+
+                except Exception as e:
+                    sys.stderr.write(f"Error processing {read.query_name}: {str(e)}\n")
+                    outfile.write(read)
 
     def reassign_tids(self, tome: Transcriptome, attr: str = "read_name"):
         # assigns the specified attribute as the transcript id
@@ -618,18 +764,22 @@ class Vira:
             for c in target_tx.get_cds():
                 c[2].set_gid(ref_tx.get_attr("gene_id"))
             
-            target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx)
-            
-            # check all donor and acceptor sites noting whether they are conserved or not
-            ref_sj_seq = self.extract_junction_seq(ref_tx, ref_tome.genome)
-            target_sj_seq = self.extract_junction_seq(target_tx, target_tome.genome)
-            # compare donor acceptor pairs
-            # sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
+            target_tx.data["ref2trg_map"], target_tx.data["trg2ref_map"] = self.process_cigar(target_tx.get_attr("cigar"), ref_tx, target_tx.get_start())
             
             self.fix_with_guide(target_tx, ref_tx, guide_tome)
+
+            # # check all donor and acceptor sites noting whether they are conserved or not
+            # ref_sj_seq = self.extract_junction_seq(ref_tx, ref_tome.genome)
+            # target_sj_seq = self.extract_junction_seq(target_tx, target_tome.genome)
+            # # compare donor acceptor pairs
+            # # sj_comp = self.compare_sj_seq(ref_sj_seq, target_sj_seq)
             
         # check all donor and acceptor positions noting whether they are conserved or not
-        # donor_map, acceptor_map = self.compare_intron_sets(ref_tome, target_tome)
+        donor_map, acceptor_map = self.extract_intron_map(self.annotation, self.exon_sam_fname)
+        for donor_pos in donor_map:
+            assert len(set(donor_map[donor_pos])) == 1, f"Multiple target donor sites found for reference donor site {donor_pos}: {donor_map[donor_pos]}"
+        for acceptor_pos in acceptor_map:
+            assert len(set(acceptor_map[acceptor_pos])) == 1, f"Multiple target acceptor sites found for reference acceptor site {acceptor_pos}: {acceptor_map[acceptor_pos]}"
         
         cds_choices = {"miniprot":{}, "guide":{}}
         
