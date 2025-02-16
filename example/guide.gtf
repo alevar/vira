@@ -1,0 +1,8 @@
+small_viral_genome	Anthropic	CDS	148	200	.	+	0	transcript_id "SVTRANS001.1"; exon_number "1"; transcript_name "viralGene1-201"; transcript_biotype "protein_coding"; protein_id "SVPROT001.1";
+small_viral_genome	Anthropic	CDS	251	339	.	+	2	transcript_id "SVTRANS001.1"; exon_number "2"; transcript_name "viralGene1-201"; transcript_biotype "protein_coding"; protein_id "SVPROT001.1";
+
+small_viral_genome	Anthropic	CDS	180	300	.	+	0	transcript_id "SVTRANS001.2"; exon_number "1"; transcript_name "viralGene1-202"; transcript_biotype "protein_coding"; protein_id "SVPROT001.2";
+small_viral_genome	Anthropic	CDS	351	371	.	+	0	transcript_id "SVTRANS001.2"; exon_number "2"; transcript_name "viralGene1-202"; transcript_biotype "protein_coding"; protein_id "SVPROT001.2";
+
+small_viral_genome	Anthropic	CDS	170	200	.	+	0	transcript_id "SVTRANS001.3"; exon_number "1"; transcript_name "viralGene1-203"; transcript_biotype "protein_coding"; protein_id "SVPROT001.3";
+small_viral_genome	Anthropic	CDS	251	280	.	+	0	transcript_id "SVTRANS001.3"; exon_number "2"; transcript_name "viralGene1-203"; transcript_biotype "protein_coding"; protein_id "SVPROT001.3";

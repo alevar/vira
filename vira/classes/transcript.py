@@ -8,7 +8,7 @@ class Object:
         self.start = float("inf") # inclusive
         self.end = 0 # non-inclusive
 
-        self.source = "ORFclust"
+        self.source = "VIRA"
         self.obj_type = None
         
         self.seqid = None
@@ -25,7 +25,7 @@ class Object:
         """
         self.seqid = None
         self.strand = None
-        self.source = "ORFclust"
+        self.source = "VIRA"
         self.obj_type = None
         self.start = float("inf")
         self.end = 0

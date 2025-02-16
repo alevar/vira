@@ -1,6 +1,52 @@
 {
-    "version": "0.2.0",
+    "version": "0.2.2",
     "configurations": [
+        {
+            "name": "vira example",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "vira",
+            "console": "integratedTerminal",
+            "args": [
+                "--annotation",
+                "${workspaceFolder}/example/query.gtf",
+                "--genome",
+                "${workspaceFolder}/example/query.fasta",
+                "--target",
+                "${workspaceFolder}/example/target.fasta",
+                "--output",
+                "${workspaceFolder}/example/output.gtf",
+                "--tmp-dir",
+                "${workspaceFolder}/example/tmp.example",
+                "--force-cds"
+            ]
+        },
+        {
+            "name": "vira debug K03455.1",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "vira",
+            "console": "integratedTerminal",
+            "args": [
+                "--annotation",
+                "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.gtf",
+                "--genome",
+                "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.fasta",
+                "--target",
+                "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.fasta",
+                "--output",
+                "${workspaceFolder}/output/K03455.1.gtf",
+                "--miniprot",
+                "${workspaceFolder}/../HIV_Atlas_Creation/soft/miniprot/miniprot",
+                "--snapper",
+                "snapper",
+                "--tmp-dir",
+                "${workspaceFolder}/tmp.K03455.1",
+                "--guide",
+                "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.gtf",
+                "--force-cds"
+            ]
+        },
         {
             "name": "vira debug",
             "type": "debugpy",
@@ -8,52 +54,44 @@
             "module": "vira",
             "console": "integratedTerminal",
             "args": [
-                "--annotation", "${workspaceFolder}/data/reference.gtf",
-                "--genome", "${workspaceFolder}/data/reference.fasta",
-                "--target", "${workspaceFolder}/data/target.fasta",
-                "--output", "${workspaceFolder}/data/output.gtf",
-                "--sam2gtf", "${workspaceFolder}/soft/sam2gtf",
-                "--miniprot", "${workspaceFolder}/soft/miniprot",
-            ],
-        },
+                "--annotation",
+                "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.gtf",
+                "--genome",
+                "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.fasta",
+                "--target",
+                "${workspaceFolder}/../HIV_Atlas_Creation/data/sequences/${input:accid}.fasta",
+                "--output",
+                "${workspaceFolder}/output/${input:accid}.gtf",
+                "--miniprot",
+                "${workspaceFolder}/../HIV_Atlas_Creation/soft/miniprot/miniprot",
+                "--snapper",
+                "snapper",
+                "--tmp-dir",
+                "${workspaceFolder}/tmp.${input:accid}",
+                "--guide",
+                "${workspaceFolder}/../HIV_Atlas_Creation/data/sequences/${input:accid}.gtf",
+                "--force-cds"
+            ]
+        }
+    ],
+    "inputs": [
         {
-            "name": "vira debug KT284371.1",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "vira",
-            "console": "integratedTerminal",
-            "args": [
-                "--annotation", "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.gtf",
-                "--genome", "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.fasta",
-                "--target", "${workspaceFolder}/../HIV_Atlas_Creation/data/sequences/KT284371.1.fasta",
-                "--output", "${workspaceFolder}/output/KT284371.1.gtf",
-                "--sam2gtf", "${workspaceFolder}/../HIV_Atlas_Creation/soft/sam2gtf/target/release/sam2gtf",
-                "--miniprot", "${workspaceFolder}/../HIV_Atlas_Creation/soft/miniprot/miniprot",
-                "--snapper", "snapper",
-                "--tmp-dir","${workspaceFolder}/tmp.KT284371.1",
-                "--guide","${workspaceFolder}/../HIV_Atlas_Creation/data/sequences/KT284371.1.gtf",
-                "--force-cds",
+            "id": "accid",
+            "type": "pickString",
+            "description": "Accession ID",
+            "options": [
+                "MH705157.1",
+                "KP718928.1",
+                "MT222949.1",
+                "MN486005.1",
+                "ON015211.1",
+                "AF443109.1",
+                "KT427770.1",
+                "KT152844.1",
+                "MK383384.1",
+                "MK041550.1"
             ],
-        },
-        {
-            "name": "vira debug MH705151.1",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "vira",
-            "console": "integratedTerminal",
-            "args": [
-                "--annotation", "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.gtf",
-                "--genome", "${workspaceFolder}/../HIV_Atlas_Creation/data/reference/K03455.1.fasta",
-                "--target", "${workspaceFolder}/../HIV_Atlas_Creation/data/sequences/MH705151.1.fasta",
-                "--output", "${workspaceFolder}/output/MH705151.1.gtf",
-                "--sam2gtf", "${workspaceFolder}/../HIV_Atlas_Creation/soft/sam2gtf/target/release/sam2gtf",
-                "--miniprot", "${workspaceFolder}/../HIV_Atlas_Creation/soft/miniprot/miniprot",
-                "--snapper", "snapper",
-                "--tmp-dir","${workspaceFolder}/tmp.MH705151.1",
-                "--guide","${workspaceFolder}/../HIV_Atlas_Creation/data/sequences/MH705151.1.gtf",
-                "--force-cds",
-            ],
+            "default": "MK041550.1"
         }
     ]
 }
-  

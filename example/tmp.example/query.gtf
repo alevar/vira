@@ -1,0 +1,18 @@
+smv	VIRA_Example	transcript	101	400	.	+	.	transcript_id "SVTRANS001.1";
+smv	VIRA_Example	exon	101	200	.	+	.	transcript_id "SVTRANS001.1";
+smv	VIRA_Example	exon	251	400	.	+	.	transcript_id "SVTRANS001.1";
+smv	VIRA_Example	CDS	148	200	.	+	0	transcript_id "SVTRANS001.1";
+smv	VIRA_Example	CDS	251	339	.	+	2	transcript_id "SVTRANS001.1";
+
+smv	VIRA_Example	transcript	101	400	.	+	.	transcript_id "SVTRANS001.2";
+smv	VIRA_Example	exon	101	300	.	+	.	transcript_id "SVTRANS001.2";
+smv	VIRA_Example	exon	351	400	.	+	.	transcript_id "SVTRANS001.2";
+smv	VIRA_Example	CDS	180	300	.	+	0	transcript_id "SVTRANS001.2";
+smv	VIRA_Example	CDS	351	371	.	+	0	transcript_id "SVTRANS001.2";
+
+smv	VIRA_Example	transcript	101	400	.	+	.	transcript_id "SVTRANS001.3";
+smv	VIRA_Example	exon	101	200	.	+	.	transcript_id "SVTRANS001.3";
+smv	VIRA_Example	exon	251	300	.	+	.	transcript_id "SVTRANS001.3";
+smv	VIRA_Example	exon	351	400	.	+	.	transcript_id "SVTRANS001.3";
+smv	VIRA_Example	CDS	170	200	.	+	0	transcript_id "SVTRANS001.3";
+smv	VIRA_Example	CDS	251	280	.	+	0	transcript_id "SVTRANS001.3";

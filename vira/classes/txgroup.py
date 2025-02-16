@@ -1,4 +1,4 @@
-from intervaltree import Interval, IntervalTree
+from intervaltree import IntervalTree
 from typing import Iterator, List, Callable
 import copy
 import os

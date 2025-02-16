@@ -12,7 +12,6 @@
 import os
 import re
 import csv
-import pysam
 import subprocess
 import numpy as np
 from enum import Enum
@@ -573,35 +572,38 @@ def to_attribute_string(attrs: dict, gff=False,
         sep = "="
         quote = ""
         end = ";"
+        
+    # convert values to strings
+    tmp_attrs = {x: str(y) for x, y in attrs.items()}
 
     for k in order:
-        if k in attrs:
-            if attrs[k] is None or attrs[k] == "":
+        if k in tmp_attrs:
+            if tmp_attrs[k] is None or tmp_attrs[k] == "":
                 continue
             if gff:
-                assert ";" not in attrs[k], "invalid character in attribute: " + attrs[k]
+                assert ";" not in tmp_attrs[k], "invalid character in attribute: " + tmp_attrs[k]
 
             if gff and feature_type == "gene" and k == "transcript_id":
                 continue
             elif gff and feature_type == "gene" and k == "gene_id":
-                res += "ID=" + quote + attrs[k] + quote + end
+                res += "ID=" + quote + tmp_attrs[k] + quote + end
             elif gff and feature_type == "transcript" and k == "transcript_id":
-                res += "ID=" + quote + attrs[k] + quote + end
+                res += "ID=" + quote + tmp_attrs[k] + quote + end
             elif gff and feature_type == "transcript" and k == "gene_id":
-                res += "Parent=" + quote + attrs[k] + quote + end
+                res += "Parent=" + quote + tmp_attrs[k] + quote + end
             elif gff and feature_type in ["exon", "CDS"] and k == "transcript_id":
-                res += "Parent=" + quote + attrs[k] + quote + end
+                res += "Parent=" + quote + tmp_attrs[k] + quote + end
             elif gff and feature_type in ["exon", "CDS"] and k == "gene_id":
                 continue
             else:
-                res += k + sep + quote + attrs[k] + quote + end
+                res += k + sep + quote + tmp_attrs[k] + quote + end
 
     # add any other attributes in sorted order
-    for k in sorted(list(attrs)):
+    for k in sorted(list(tmp_attrs)):
         if k not in order:
             if gff:
-                assert ";" not in attrs[k], "invalid character in attribute: " + attrs[k]
-            res += k + sep + quote + attrs[k] + quote + end
+                assert ";" not in tmp_attrs[k], "invalid character in attribute: " + tmp_attrs[k]
+            res += k + sep + quote + tmp_attrs[k] + quote + end
 
     if not gff:
         res = res.rstrip()
@@ -745,24 +747,18 @@ def gtf_or_gff(file_path):
     try:
         with open(file_path, 'r') as file:
             for line in file:
-                # Skip comments and empty lines
                 if line.startswith('#') or not line.strip():
                     continue
-                
-                # Split the line into fields
                 lcs = line.strip().split('\t')
-                
-                # Check the number of fields
                 if len(lcs) != 9:
                     return None
-                
-                # Check for GTF-specific attributes (field 9 contains key-value pairs separated by semicolons)
-                if 'gene_id \"' in lcs[8] and 'transcript_id \"' in lcs[8]:
+                if 'transcript_id \"' is None and 'gene_id \"' is None:
+                    continue
+                elif 'gene_id \"' in lcs[8] or 'transcript_id \"' in lcs[8]:
                     return 'gtf'
-                
-                # Check for GFF-specific format (attribute field contains key-value pairs separated by semicolons, but without "gene_id" or "transcript_id")
-                if 'ID=' in lcs[8] or 'Parent=' in lcs[8]:
+                elif 'ID=' in lcs[8] or 'Parent=' in lcs[8]:
                     return 'gff'
+                else: continue
                 
             return None
     except Exception as e:
@@ -961,74 +957,6 @@ def build_cigar_from_tuples(ops):
     """Convert list of CIGAR tuples to CIGAR string"""
     return ''.join(f"{length}{op}" for length, op in ops)
 
-def elongate_cigar(cigar, elongate_length, from_end=False):
-    """
-    Elongate CIGAR string by n bases by changing ops to D. Can be done at the start or end of the CIGAR string.
-    D on I = DI, D on M = DM, D on D = 2D
-    """
-    cigar_copy = list(cigar) if not from_end else list(reversed(cigar))
-    new_cigar = []
-
-    remaining_length = elongate_length
-
-    while remaining_length > 0 and cigar_copy:
-        oplen, op = cigar_copy.pop(0)
-        if op == 'M': # add to M
-            new_cigar.append((remaining_length, 'D'))
-            remaining_length = 0
-            new_cigar.append((oplen, op))
-        elif op == 'D':
-            dlen = oplen + remaining_length
-            new_cigar.append((dlen, 'D'))
-            remaining_length = 0
-        elif op == 'I':
-            new_cigar.append((oplen, op))
-        else:
-            raise ValueError(f"Unsupported CIGAR operation: {op}")
-    assert remaining_length == 0, "Remaining length should be zero after processing all ops"
-
-    # add remaining ops
-    new_cigar.extend(cigar_copy)
-
-    return new_cigar if not from_end else new_cigar[::-1]
-
-def shorten_cigar(cigar, shorten_length, from_end=False):
-    """
-    Shorten CIGAR string by n bases by changing ops to I. Can be done at the start or end of the CIGAR string.
-    I on M = I, I on D = 0, I on I = skip to next non-I op
-    """
-
-    cigar_copy = list(cigar) if not from_end else list(reversed(cigar))
-    new_cigar = []
-
-    remaining_length = shorten_length
-
-    while remaining_length > 0 and cigar_copy:
-        oplen, op = cigar_copy.pop(0)
-        if op == 'M': # consume M and replace with I
-            ilen = min(oplen, remaining_length)
-            new_cigar.append((ilen, 'I'))
-            remaining_length -= ilen
-            if oplen > ilen:
-                new_cigar.append((oplen - ilen, op))
-        elif op == 'D': # negate D
-            ilen = min(oplen, remaining_length)
-            remaining_length -= ilen
-            if oplen > ilen:
-                new_cigar.append((oplen - ilen, op))
-        elif op == 'I': # skip I until next op since new I must always consume positions on alignment
-            new_cigar.append((oplen, op))
-        else:
-            raise ValueError(f"Unsupported CIGAR operation: {op}")
-        
-    assert remaining_length == 0, "Remaining length should be zero after processing all ops"
-
-    # add remaining ops
-    new_cigar.extend(cigar_copy)
-
-    return new_cigar if not from_end else new_cigar[::-1]
-
-
 def shorten_cigar_inplace(cigar, shorten_length:int, from_end:bool=False, offset:int=0):
     """
     Shorten CIGAR string in place by n bases by changing ops to I. Can be done at the start or end of the CIGAR string.
@@ -1078,7 +1006,8 @@ def shorten_cigar_inplace(cigar, shorten_length:int, from_end:bool=False, offset
         else:
             raise ValueError(f"Unsupported CIGAR operation: {op}")
 
-    assert remaining_length == 0, "Remaining length should be zero after processing all ops"
+    if remaining_length > 0:
+        raise ValueError(f"Remaining length is non-zero after processing all ops: {remaining_length}")
 
     if from_end:
         cigar.reverse()
@@ -1128,10 +1057,49 @@ def elongate_cigar_inplace(cigar, elongate_length:int, from_end:bool=False, offs
         else:
             raise ValueError(f"Unsupported CIGAR operation: {op}")
 
-    # If remaining_length is non-zero, it means we need to add a new D at the end
     if remaining_length > 0:
-        cigar.append((remaining_length, 'D'))
+        raise ValueError(f"Remaining length is non-zero after processing all ops: {remaining_length}")
 
     # Reverse the cigar back if processed from the end
     if from_end:
         cigar.reverse()
+
+def cigar2exons(pos, cigar_string):
+    """
+    Parse CIGAR string into a list of intervals (exons).
+
+    Args:
+        pos (int): Starting position on the reference (1-based).
+        cigar (list of tuples): CIGAR operations as (operation, length), where
+                                operation is a string ('M', 'I', 'D', 'N', 'S', 'H', '=', 'X').
+
+    Returns:
+        list of tuples: Exons as (start, end) in 1-based coordinates.
+    """
+    exons = []
+    exon_start = pos
+    exon_end = pos
+
+    cigar_ops = parse_cigar_into_tuples(cigar_string)
+
+    for oplen, op in cigar_ops:
+        if op in {'M', '=', 'X'}:  # Alignment matches, mismatches
+            exon_end += oplen
+        elif op == 'D':  # Deletion in reference
+            exon_end += oplen
+        elif op == 'N':  # Skipped region (intron)
+            if exon_end > exon_start:  # Save current exon
+                exons.append((exon_start+1, exon_end))
+            exon_start = exon_end + oplen
+            exon_end = exon_start
+        elif op in {'I', 'S', 'H'}:  # Insertion, soft clip, hard clip
+            # Does not affect reference alignment
+            continue
+        else:
+            raise ValueError(f"Unknown CIGAR operation: {op}")
+
+    # Add the final exon if valid
+    if exon_end > exon_start:
+        exons.append((exon_start+1, exon_end))
+
+    return exons
