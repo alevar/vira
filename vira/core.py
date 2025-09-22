@@ -685,7 +685,7 @@ class Vira:
                 tx.add_attribute("miniprot_compatibility","1")
             # add the CDS to the transcript
             tmp_tx = copy.deepcopy(target_cds_tx)
-            for c in target_cds_tx.get_cds():
+            for c in tmp_tx.get_cds():
                 c[2].add_attribute("transcript_id",tid,replace=True)
                 c[2].add_attribute("gene_id",target_tx.get_attr("gene_id"),replace=True)
             # get translated sequence

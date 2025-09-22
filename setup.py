@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='vira-av',
-    version='1.0.0',
+    version='1.0.1',
     author='Ales Varabyou',
     author_email='ales.varabyou@jhu.edu',
     url='https://github.com/alevar/vira',
